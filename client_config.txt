@@ -1,0 +1,41 @@
+配置概览:
+
+IP: 47.82.159.125
+
+Port: 443
+
+Password: ZAS1OXIaSsS0XV5M
+
+Obfs Type: salamander
+
+Obfs Password: HN1CSlnV7WWpvQGJ
+
+SNI: www.bing.com
+
+Allow Insecure: True
+
+一键链接 (URL Scheme):
+hysteria2://ZAS1OXIaSsS0XV5M@47.82.159.125:443?sni=www.bing.com&obfs=salamander&obfs-password=HN1CSlnV7WWpvQGJ&insecure=1#新加坡500GB
+
+---
+
+### 注意事项 (如果您无法连接):
+
+1. **阿里云安全组 (最关键)**: 
+   由于您的服务器在阿里云，默认会拦截所有 UDP 流量。请务必前往阿里云控制台，在安全组入方向规则中添加：
+   - **协议**: UDP
+   - **端口范围**: 443
+   - **授权对象**: 0.0.0.0/0
+
+2. **Shadowrocket 手动配置指引**:
+   如果一键导入无效，请手动检查以下项：
+   - 类型: Hysteria 2
+   - 服务器: 47.82.159.125
+   - 端口: 443
+   - 验证 (Auth): ZAS1OXIaSsS0XV5M
+   - 混淆 (Obfuscation): 
+     - 类型: salamander
+     - 密码 (Password): HN1CSlnV7WWpvQGJ
+   - TLS: 
+     - SNI: www.bing.com
+     - 允许不安全 (Allow Insecure): 开启

@@ -1,0 +1,70 @@
+port: 7890
+socks-port: 7891
+allow-lan: true
+mode: Rule
+log-level: info
+dns:
+  enable: true
+  enhanced-mode: fake-ip
+  nameserver:
+  - 8.8.8.8
+  - 1.1.1.1
+  - 119.29.29.29
+proxies:
+- name: jtti日本-无限
+  type: hysteria2
+  server: 103.110.221.239
+  port: 443
+  password: ZAS1OXIaSsS0XV5M
+  obfs: salamander
+  obfs-password: HN1CSlnV7WWpvQGJ
+  sni: www.bing.com
+  skip-cert-verify: true
+  insecure: true
+  up: '100'
+  down: '200'
+- name: jtti美国-无限-1
+  type: hysteria2
+  server: 38.181.44.110
+  port: 443
+  password: ZAS1OXIaSsS0XV5M
+  obfs: salamander
+  obfs-password: HN1CSlnV7WWpvQGJ
+  sni: www.bing.com
+  skip-cert-verify: true
+  insecure: true
+  up: '100'
+  down: '200'
+- name: jtti美国-无限-2
+  type: hysteria2
+  server: 38.181.44.222
+  port: 443
+  password: ZAS1OXIaSsS0XV5M
+  obfs: salamander
+  obfs-password: HN1CSlnV7WWpvQGJ
+  sni: www.bing.com
+  skip-cert-verify: true
+  insecure: true
+  up: '100'
+  down: '200'
+proxy-groups:
+- name: 🚀 自动选择
+  type: url-test
+  proxies:
+  - jtti日本-无限
+  - jtti美国-无限-1
+  - jtti美国-无限-2
+  url: http://www.gstatic.com/generate_204
+  interval: 300
+- name: 🔰 节点选择
+  type: select
+  proxies:
+  - 🚀 自动选择
+  - jtti日本-无限
+  - jtti美国-无限-1
+  - jtti美国-无限-2
+  - DIRECT
+rules:
+- DOMAIN-SUFFIX,google.com,🔰 节点选择
+- GEOIP,CN,DIRECT
+- MATCH,🔰 节点选择

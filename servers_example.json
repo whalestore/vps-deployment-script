@@ -1,0 +1,16 @@
+[
+    {
+        "alias": "示例服务器1-新加坡",
+        "ip": "1.2.3.4",
+        "user": "root",
+        "password": "your_password_here",
+        "ssh_port": 22
+    },
+    {
+        "alias": "示例服务器2-日本",
+        "ip": "5.6.7.8",
+        "user": "root",
+        "password": "your_password_here",
+        "ssh_port": 22
+    }
+]

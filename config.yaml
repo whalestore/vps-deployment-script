@@ -1,0 +1,19 @@
+listen: :443
+
+tls:
+  cert: /etc/hysteria/server.crt
+  key: /etc/hysteria/server.key
+
+auth:
+  type: password
+  password: "ZAS1OXIaSsS0XV5M"
+
+obfs:
+  type: salamander
+  salamander:
+    password: "HN1CSlnV7WWpvQGJ"
+
+ignoreClientBandwidth: false
+bandwidth:
+  up: 100 mbps
+  down: 200 mbps
