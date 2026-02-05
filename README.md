@@ -113,12 +113,6 @@ python deploy_manager.py
 2. 重新运行 `python deploy_manager.py`
 3. 脚本会自动部署新节点并更新订阅配置
 
-## 注意事项
-
-- ⚠️ `servers.json` 包含敏感信息，已添加到 `.gitignore`，请勿提交到版本控制
-- 服务器需要 root 权限
-- 确保服务器可以访问 GitHub（用于下载 Hysteria 2）
-
 ## 许可证
 
 MIT License
