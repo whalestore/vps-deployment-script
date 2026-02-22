@@ -1,118 +1,81 @@
-# VPS 节点部署管理器
+# Sing-box VPS Deployment Tool
 
-一键部署 Hysteria 2 代理节点并生成 Clash 订阅配置的工具。
+This tool automates the deployment of [Sing-box](https://github.com/SagerNet/sing-box) on multiple VPS servers using the [233boy script](https://github.com/233boy/sing-box). It supports **VLESS-REALITY** and **Hysteria2** protocols, generating a unified **Clash Meta (Mihomo)** subscription link and QR code.
 
-## 功能特性
+## Features
 
-- 🚀 自动部署 Hysteria 2 到多台服务器
-- 🔧 自动配置防火墙、SSL 证书、Nginx
-- 📦 生成 Clash 订阅配置文件 (`nodes.yml`)
-- 🔄 自动同步配置到所有节点
-- 📱 生成订阅链接二维码
+- **One-click Deployment**: Deploys Sing-box to all servers listed in `servers.json`.
+- **Protocol Switching**: Support for `REALITY` (default) and `Hysteria2` via command line arguments.
+- **Automatic Configuration**:
+  - Installs/Updates Sing-box using the 233boy script.
+  - Configures the selected protocol on port 443.
+  - Cleans up legacy services (Hysteria2, Nginx) to prevent port conflicts.
+- **Subscription Management**:
+  - Generates a `clash_meta_config.yaml` compatible with Clash Meta.
+  - Uploads the configuration to the first server for easy subscription.
+  - Provides a subscription URL and QR code.
 
-## 环境要求
+## Prerequisites
 
 - Python 3.8+
-- pip
+- SSH access to your VPS servers (root or sudo user).
+- `pip` installed.
 
-## 安装
+## Setup
 
-1. **克隆项目**
+1. **Clone the repository**:
+   ```bash
+   git clone <repo-url>
+   cd <repo-folder>
+   ```
 
+2. **Create Virtual Environment**:
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install paramiko pyyaml qrcode[pil]
+   ```
+
+3. **Configure Servers**:
+   Edit `servers.json` with your server details:
+   ```json
+   [
+       {
+           "alias": "Server-1-US",
+           "ip": "1.2.3.4",
+           "user": "root",
+           "password": "your_password",
+           "ssh_port": 22
+       },
+       ...
+   ]
+   ```
+
+## Usage
+
+### Deploy with REALITY (Default)
+Run the script to deploy VLESS-REALITY protocol:
 ```bash
-git clone <repository-url>
-cd vps
+./venv/bin/python deploy_singbox.py
 ```
-
-2. **创建虚拟环境**
-
+Or explicitly:
 ```bash
-python3 -m venv venv
-source venv/bin/activate  # Linux/macOS
-# 或 Windows: venv\Scripts\activate
+./venv/bin/python deploy_singbox.py --protocol reality
 ```
 
-3. **安装依赖**
-
+### Deploy with Hysteria2
+Run the script to deploy Hysteria2 protocol:
 ```bash
-pip install paramiko pyyaml qrcode[pil]
+./venv/bin/python deploy_singbox.py --protocol hysteria2
 ```
 
-## 配置
+## Output
 
-1. **复制示例配置文件**
+After running the script, you will get:
+1. **Subscription URL**: `http://<First-Server-IP>/subscribe.yaml` (Import this into Clash Meta)
+2. **QR Code**: `subscription_qr.png` (Scan with supported mobile apps)
+3. **Raw Links**: Displayed in the terminal and saved to `subscriptions.txt`.
 
-```bash
-cp servers_example.json servers.json
-```
+## License
 
-2. **编辑 `servers.json`**
-
-配置你的服务器信息：
-
-```json
-[
-    {
-        "alias": "服务器别名-地区",
-        "ip": "服务器IP地址",
-        "user": "root",
-        "password": "SSH密码",
-        "ssh_port": 22
-    }
-]
-```
-
-| 字段 | 说明 |
-|------|------|
-| `alias` | 节点别名，会显示在 Clash 客户端中 |
-| `ip` | 服务器 IP 地址 |
-| `user` | SSH 用户名（通常为 root） |
-| `password` | SSH 密码 |
-| `ssh_port` | SSH 端口（默认 22） |
-
-## 使用
-
-运行部署脚本：
-
-```bash
-python deploy_manager.py
-```
-
-脚本将自动：
-1. 连接到每台服务器
-2. 配置防火墙规则
-3. 安装并配置 Hysteria 2
-4. 安装 Nginx
-5. 生成 `nodes.yml` 配置文件
-6. 上传配置到所有节点
-7. 生成订阅二维码
-
-## 输出文件
-
-| 文件 | 说明 |
-|------|------|
-| `nodes.yml` | Clash 订阅配置文件 |
-| `final_sub_qr.png` | 订阅链接二维码 |
-
-## 客户端使用
-
-部署完成后，使用以下方式导入订阅：
-
-1. **订阅链接**: `http://<第一台服务器IP>/nodes.yml`
-2. **扫描二维码**: 使用 Clash 客户端扫描 `final_sub_qr.png`
-
-支持的客户端：
-- Clash for Windows
-- ClashX (macOS)
-- Clash for Android
-- Stash (iOS)
-
-## 新增节点
-
-1. 编辑 `servers.json`，添加新服务器信息
-2. 重新运行 `python deploy_manager.py`
-3. 脚本会自动部署新节点并更新订阅配置
-
-## 许可证
-
-MIT License
+MIT
