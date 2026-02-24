@@ -1,2 +1,4 @@
-claw新加坡-500GB: http://47.82.159.125/sub.yaml
-jtti日本-无限: http://103.110.221.239/sub.yaml
+claw新加坡-500GB: vless://01909cc5-ec86-4d02-92a5-c78107bd8ffe@47.82.159.125:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.paypal.com&pbk=p3UlTxt621sz_HTd4zSVwIlzWe8kgTdmN4XE1kSsSEk&fp=chrome#233boy-reality-47.82.159.125
+jtti日本-无限: vless://f8d5f3ec-f016-423e-b7df-9a5cb42ad2b7@103.110.221.239:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.paypal.com&pbk=e0vPQxNUefMZrTjPDz66NXff3vilKQzBQENGw9wrhXo&fp=chrome#233boy-reality-103.110.221.239
+jtti美国-无限-1: vless://a1611ab2-0d47-43a3-84a2-86d2b8173153@38.181.44.110:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=aws.amazon.com&pbk=kH3tuMyM0Raqzx2uvFHiWYmbi81jkBUh7sXg2jo9AmA&fp=chrome#233boy-reality-38.181.44.110
+jtti美国-无限-2: vless://fb0f881a-a67e-4300-9f1b-8af3dda5104e@38.181.44.222:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=dash.cloudflare.com&pbk=u5oOKAa8eYjSgeOAt6VhaJY_kjHCRM3gRcB0iT5s_1I&fp=chrome#233boy-reality-38.181.44.222
