@@ -29,6 +29,20 @@ proxies:
     public-key: p3UlTxt621sz_HTd4zSVwIlzWe8kgTdmN4XE1kSsSEk
     short-id: ''
   client-fingerprint: chrome
+- name: claw东京
+  type: vless
+  server: 47.79.92.99
+  port: 443
+  uuid: c0ca05a5-e2cd-4073-b54b-cebeccd5a8fa
+  network: tcp
+  tls: true
+  udp: true
+  flow: xtls-rprx-vision
+  servername: www.paypal.com
+  reality-opts:
+    public-key: nnfnVZOwzoEGt1h-dMgczRG9SyeE4P1Q7BOaiLt2rHI
+    short-id: ''
+  client-fingerprint: chrome
 - name: jtti日本-无限
   type: vless
   server: 103.110.221.239
@@ -77,6 +91,7 @@ proxy-groups:
   proxies:
   - ♻️ 自动选择
   - claw新加坡-500GB
+  - claw东京
   - jtti日本-无限
   - jtti美国-无限-1
   - jtti美国-无限-2
@@ -87,6 +102,7 @@ proxy-groups:
   tolerance: 50
   proxies:
   - claw新加坡-500GB
+  - claw东京
   - jtti日本-无限
   - jtti美国-无限-1
   - jtti美国-无限-2

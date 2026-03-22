@@ -7,6 +7,12 @@ import yaml
 import qrcode
 import argparse
 from urllib.parse import urlparse, parse_qs, unquote
+import re
+
+def strip_ansi_codes(text):
+    """Removes ANSI escape sequences from a string."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
 
 # Configuration
 SERVERS_FILE = 'servers.json'
