@@ -29,7 +29,6 @@ proxies:
     public-key: p3UlTxt621sz_HTd4zSVwIlzWe8kgTdmN4XE1kSsSEk
     short-id: ''
   client-fingerprint: chrome
-# claw东京 (47.79.92.99) 已移除 — 专用 TikTok 直播中转，不再用于个人翻墙
 - name: jtti日本-无限
   type: vless
   server: 103.110.221.239
