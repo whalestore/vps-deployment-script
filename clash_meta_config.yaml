@@ -15,18 +15,18 @@ dns:
   - 1.1.1.1
   - https://dns.google/dns-query
 proxies:
-- name: claw新加坡-500GB
+- name: vmiss
   type: vless
-  server: 47.82.159.125
+  server: 206.237.120.151
   port: 443
-  uuid: 01909cc5-ec86-4d02-92a5-c78107bd8ffe
+  uuid: a330baf1-34a4-4f71-8243-9e2c95ba9364
   network: tcp
   tls: true
   udp: true
   flow: xtls-rprx-vision
-  servername: www.paypal.com
+  servername: aws.amazon.com
   reality-opts:
-    public-key: p3UlTxt621sz_HTd4zSVwIlzWe8kgTdmN4XE1kSsSEk
+    public-key: G18u84XXEvHqz2zT47iFm-TbJhEWVlwwEyX70q9LAk4
     short-id: ''
   client-fingerprint: chrome
 - name: jtti日本-无限
@@ -76,7 +76,7 @@ proxy-groups:
   type: select
   proxies:
   - ♻️ 自动选择
-  - claw新加坡-500GB
+  - vmiss
   - jtti日本-无限
   - jtti美国-无限-1
   - jtti美国-无限-2
@@ -86,7 +86,7 @@ proxy-groups:
   interval: 300
   tolerance: 50
   proxies:
-  - claw新加坡-500GB
+  - vmiss
   - jtti日本-无限
   - jtti美国-无限-1
   - jtti美国-无限-2
