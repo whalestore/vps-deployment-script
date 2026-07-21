@@ -1,0 +1,63 @@
+{
+  "_comment": "分流策略配置 - 链路内的域名级分流 (类似 Shadowrocket 2738.conf)",
+  "_usage": "绑定了链路的子网流量, 进入 sing-box 后按此规则分流: direct=链路内直连(不走VLESS), chain=走VLESS多跳",
+  "_edit": "修改此文件后运行 /etc/sing-box/generate-config.sh 重新生成 config.json",
+
+  "rule_sets": [
+    {
+      "tag": "geosite-cn",
+      "type": "remote",
+      "format": "binary",
+      "url": "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+      "download_detour": "direct"
+    },
+    {
+      "tag": "geoip-cn",
+      "type": "remote",
+      "format": "binary",
+      "url": "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
+      "download_detour": "direct"
+    }
+  ],
+
+  "direct_domain_suffix": [
+    "baidu.com", "baidubcr.com", "bdstatic.com",
+    "taobao.com", "alicdn.com", "alibaba.com", "alipay.com", "amap.com",
+    "163.com", "126.net", "127.net", "163yun.com",
+    "jd.com", "360buyimg.com",
+    "bilibili.com", "acgvideo.com", "hdslb.com",
+    "weibo.com", "sinaimg.cn",
+    "qq.com", "tencent.com", "tencentcloudapi.com", "qcloud.com",
+    "iqiyi.com", "douyin.com", "douyucdn.cn", "douyinpic.com",
+    "abchina.com", "ccbc.com", "cmbchina.com",
+    "12306.cn", "ctrip.com", "qunar.com",
+    "360.cn", "haosou.com",
+    "cn", "com.cn"
+  ],
+
+  "proxy_domain_suffix": [
+    "apple-relay.akamaized.net",
+    "apple-relay.apple.com",
+    "apple-relay.cloudflare.com",
+    "apple-relay.fastly-edge.com",
+    "apple-relay.mask.apple-dns.net",
+    "copilot.microsoft.com",
+    "copilot.bing.com",
+    "github.com", "githubusercontent.com", "githubassets.com",
+    "google.com", "googleapis.com", "gstatic.com", "googlevideo.com",
+    "youtube.com", "ytimg.com", "ggpht.com",
+    "openai.com", "chatgpt.com", "oaistatic.com",
+    "claude.ai", "anthropic.com",
+    "tiktok.com", "tiktokcdn.com", "musical.ly",
+    "twitter.com", "x.com", "twimg.com",
+    "telegram.org", "t.me",
+    "wikipedia.org", "wikimedia.org",
+    "cloudflare.com", "cloudflareinsights.com",
+    "stripe.com", "paypal.com",
+    "amazonaws.com",
+    "notion.so", "notion.com",
+    "linear.app",
+    "vercel.app", "vercel.com",
+    "netlify.app", "netlify.com"
+  ]
+}

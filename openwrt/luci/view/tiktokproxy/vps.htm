@@ -1,0 +1,674 @@
+<%+header%>
+<h2 name="content">节点与链路管理</h2>
+
+<!-- ===== 网口管理 (合并拓扑+子网) ===== -->
+<div class="chb-card">
+  <div class="chb-card-header">
+    <h3 class="chb-card-title">网口管理</h3>
+    <button type="button" class="chb-btn chb-btn-sm" onclick="loadTopology()">刷新</button>
+  </div>
+  <div class="chb-card-body">
+    <div id="topology_area">
+      <div class="chb-stat-desc">加载中...</div>
+    </div>
+  </div>
+</div>
+
+
+</div>
+
+
+<div class="chb-card">
+  <div class="chb-card-body">
+    <div class="chb-card-actions">
+      <button type="button" class="chb-btn chb-btn-primary" onclick="showAddChain()">+ 添加链路</button>
+      <button type="button" class="chb-btn chb-btn-ghost" onclick="loadChains()">刷新</button>
+    </div>
+    <div id="chains_list_area" class="chb-empty">加载中...</div>
+  </div>
+</div>
+
+<!-- ===== 链路编辑表单 ===== -->
+<div class="chb-card" id="chain_form" style="display:none;">
+  <div class="chb-card-header">
+    <h3 class="chb-card-title" id="chain_form_title">添加链路</h3>
+  </div>
+  <div class="chb-card-body">
+    <input type="hidden" id="c_edit_id">
+    <div class="chb-separator-text">链路信息</div>
+    <div class="chb-form-grid">
+      <div class="chb-field"><label class="chb-label">链路名称 <span class="chb-required">*</span></label><input type="text" class="chb-input" id="c_name" placeholder="mmlive-us1"></div>
+      <div class="chb-field"><label class="chb-label">启用</label><div class="chb-select-wrap"><select class="chb-input" id="c_enabled"><option value="1">启用</option><option value="0">禁用</option></select></div></div>
+      <div class="chb-field"><label class="chb-label">子网 CIDR</label><input type="text" class="chb-input" id="c_source_cidr" placeholder="留空自动分配"></div>
+      <div class="chb-field"><label class="chb-label">AP MAC</label><input type="text" class="chb-input" id="c_ap_mac" placeholder="选填"></div>
+      <div class="chb-field"><label class="chb-label">AP IP</label><input type="text" class="chb-input" id="c_ap_ip" placeholder="选填"></div>
+    </div>
+
+    <div class="chb-separator-text">出海路径（按顺序填写，可增删）</div>
+    <div id="hops_container"></div>
+    <div style="margin-top:8px;">
+      <button type="button" class="chb-btn chb-btn-sm" onclick="addHop()">+ 添加一跳</button>
+    </div>
+    <div class="chb-stat-desc" style="margin-top:8px;">每跳的 VLESS 参数默认使用「全局设置」中的值，编辑时可展开高级选项单独修改</div>
+
+    <div class="chb-btn-group">
+      <button type="button" class="chb-btn chb-btn-primary" onclick="saveChain()">保存</button>
+      <button type="button" class="chb-btn" onclick="cancelChain()">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="result_msg" class="chb-msg" style="display:none;"></div>
+
+<style type="text/css">
+/* 模态框 */
+.chb-modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5); z-index: 1000;
+  display: flex; align-items: center; justify-content: center;
+}
+.chb-modal {
+  background: #fff; border-radius: 8px; min-width: 420px;
+  max-width: 90%; max-height: 90vh; overflow-y: auto;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+}
+.chb-modal-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 16px 20px; border-bottom: 1px solid #eee;
+}
+.chb-modal-header h3 { margin: 0; font-size: 16px; }
+.chb-modal-close {
+  background: none; border: none; font-size: 24px;
+  cursor: pointer; color: #999; padding: 0; line-height: 1;
+}
+.chb-modal-body { padding: 20px; }
+.chb-modal-footer {
+  padding: 12px 20px; border-top: 1px solid #eee;
+  display: flex; justify-content: flex-end; gap: 8px;
+}
+/* 网口卡片 (一行一个) */
+.chb-iface-row {
+  border: 1px solid #e0e0e0; border-radius: 8px;
+  padding: 16px; margin-bottom: 12px;
+}
+.chb-iface-row.offline { opacity: 0.5; }
+.chb-iface-row .iface-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+}
+.chb-iface-row .iface-meta {
+  font-size: 13px; color: #666; margin-bottom: 8px;
+}
+.chb-iface-row .subnet-section {
+  background: #f5f5f5; border-radius: 6px; padding: 10px;
+  margin: 8px 0;
+}
+.chb-iface-row .device-section {
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed #e0e0e0;
+}
+.chb-iface-row .actions {
+  margin-top: 12px; display: flex; gap: 8px;
+}
+.chb-status-dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; margin-right: 4px; vertical-align: middle;
+}
+.chb-status-dot.active { background: #4caf50; }
+.chb-status-dot.stale { background: #ff9800; }
+.chb-status-dot.offline { background: #ccc; }
+.chb-status-dot.disconnected { background: #f44336; }
+</style>
+
+<script type="text/javascript">
+var CH_LIST_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_list")%>';
+var CH_GET_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_get")%>';
+var CH_ADD_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_add")%>';
+var CH_UPD_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_update")%>';
+var CH_DEL_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_delete")%>';
+var CH_ACTIVATE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_activate")%>';
+var SETTINGS_GET_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","settings_get")%>';
+var INIT_STATUS_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","node_init_status")%>';
+var DIAG_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","diagnostics")%>';
+var STATUS_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","status")%>';
+var SUB_LIST_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_list")%>';
+var SUB_GET_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_get")%>';
+var SUB_ADD_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_add")%>';
+var SUB_UPD_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_update")%>';
+var SUB_DEL_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_delete")%>';
+var SUB_BIND_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_bind")%>';
+var SUB_UNBIND_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_unbind")%>';
+var IFACE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","interfaces_list")%>';
+var TOPOLOGY_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","network_topology")%>';
+var CH_DISABLE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_disable")%>';
+var subnetsCache = [];   // 子网列表缓存 (供链路卡片显示服务子网)
+var chainsCache = [];    // 链路列表缓存 (供子网绑定下拉)
+
+var defaultSshPort = 22;
+var hopCounter = 0;
+var initPollTimer=null;
+var vpsLatencies = {};   // { chainId_segment: ms }
+var proxyRunning = false; // 代理是否运行中
+var INIT_STEP_NAMES = ['', '连接 VPS', '安装 sing-box', '检测可用端口', '生成 REALITY 密钥', '写入配置文件', '启动服务', '连通测试'];
+
+// XHR.post 静态方法在 OpenWrt 24.10 的 xhr.js 中不存在, 用实例方法替代
+function xhrPost(url, data, callback) {
+  var xhr = new XHR();
+  xhr.post(url, data, function(x) {
+    var json = null;
+    if (x.getResponseHeader('Content-Type') == 'application/json') {
+      try { json = JSON.parse(x.responseText); } catch(e) { json = null; }
+    }
+    callback(x, json);
+  });
+}
+
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+function ipToCountry(ip) {
+  if (ip.match(/^47\.\d+/) || ip.match(/^103\.110\./) ) return {flag:'🇯🇵', name:'日本'};
+  if (ip.match(/^216\.\d+/) || ip.match(/^38\.\d+/) ) return {flag:'🇺🇸', name:'美国'};
+  if (ip.match(/^10\.\d+/)) return {flag:'🔒', name:'内网'};
+  return {flag:'🌐', name: ip};
+}
+
+// 预加载默认 SSH 端口
+XHR.get(SETTINGS_GET_URL, null, function(x, rv) {
+  if (rv && rv.default_ssh_port) defaultSshPort = rv.default_ssh_port;
+});
+
+// ===== 网口管理 (合并拓扑+子网) =====
+function loadTopology() {
+  var area = document.getElementById('topology_area');
+  if (!area) return;
+  area.innerHTML = '<div class="chb-stat-desc">加载中...</div>';
+  XHR.get(TOPOLOGY_URL, null, function(x, rv) {
+    if (!rv || !rv.interfaces) {
+      area.innerHTML = '<div class="chb-stat-desc">加载失败</div>';
+      return;
+    }
+    var html = '';
+    rv.interfaces.forEach(function(iface) {
+      var offline = iface.carrier == 0;
+      var carrierClass = offline ? 'disconnected' : 'active';
+      var carrierText = offline ? '未连接' : '已连接';
+      html += '<div class="chb-iface-row' + (offline ? ' offline' : '') + '">';
+      html += '<div class="iface-header">';
+      html += '<div><strong style="font-size:15px;">' + esc(iface.name) + '</strong>';
+      if (iface.role_label) html += ' <span style="font-size:12px;color:#999;">(' + esc(iface.role_label) + ')</span>';
+      html += '</div>';
+      html += '<span style="font-size:13px;"><span class="chb-status-dot ' + carrierClass + '"></span>' + carrierText + '</span>';
+      html += '</div>';
+      if (!offline) {
+        html += '<div class="iface-meta">';
+        html += esc(iface.mac);
+        if (iface.speed && iface.speed != '-') html += ' &middot; ' + esc(iface.speed) + 'Mbps/' + esc(iface.duplex || '');
+        if (iface.ip) html += ' &middot; IP: ' + esc(iface.ip);
+        if (iface.in_bridge && iface.bridge_name) html += ' &middot; 桥接: ' + esc(iface.bridge_name);
+        html += '</div>';
+        if (iface.is_wan) {
+          html += '<div class="chb-stat-desc">上行网络接口</div>';
+        } else {
+          if (iface.subnet) {
+            var isRealSubnet = iface.subnet.id != null;
+            html += '<div class="subnet-section">';
+            html += '<div><strong>&#128230; ' + esc(iface.subnet.name) + '</strong></div>';
+            html += '<div style="font-size:12px;color:#666;margin-top:4px;">';
+            html += 'CIDR: ' + esc(iface.subnet.cidr) + ' &middot; 网关: ' + esc(iface.subnet.gateway);
+            if (iface.subnet.dhcp_pool) html += ' &middot; DHCP: ' + esc(iface.subnet.dhcp_pool);
+            html += '</div>';
+            html += '<div style="margin-top:6px;">';
+            html += '&#128279; 链路: <strong>' + esc(iface.subnet.chain_name || '未绑定') + '</strong>';
+            if (isRealSubnet) {
+              html += ' <button type="button" class="chb-btn chb-btn-sm" onclick="showChainModal(' + iface.subnet.id + ', ' + (iface.subnet.chain_id || 'null') + ')" style="margin-left:8px;">更换</button>';
+            }
+            html += '</div>';
+            html += '</div>';
+          }
+          if (iface.devices && iface.devices.length > 0) {
+            html += '<div class="device-section">';
+            html += '<div style="font-size:12px;color:#999;margin-bottom:4px;">&#128241; 连接设备 (' + iface.devices.length + '):</div>';
+            iface.devices.forEach(function(dev) {
+              var dotClass = dev.status == 'active' ? 'active' : dev.status == 'stale' ? 'stale' : 'offline';
+              var dotLabel = dev.status == 'active' ? '活跃' : dev.status == 'stale' ? '空闲' : '离线';
+              html += '<div style="display:flex;align-items:center;padding:2px 0;font-size:13px;">';
+              html += '<span class="chb-status-dot ' + dotClass + '"></span>';
+              html += '<span style="flex:1;">' + esc(dev.hostname) + '</span>';
+              html += '<span style="color:#666;font-size:11px;">' + esc(dev.ip) + ' &middot; ' + dotLabel + '</span>';
+              html += '</div>';
+            });
+            html += '</div>';
+          }
+          // 子网只读: 不显示创建/编辑/删除按钮, 只显示链路更换
+          if (iface.subnet && iface.subnet.id != null) {
+            // 已有子网: 无额外操作 (链路更换在子网信息里已有)
+          }
+        }
+      }
+      html += '</div>';
+    });
+    area.innerHTML = html;
+  });
+}
+
+
+function showChainModal(subnetId, currentChainId) {
+  var options = '<option value="">未绑定 (直连)</option>';
+  chainsCache.forEach(function(c) {
+    var sel = (currentChainId == c.id) ? ' selected' : '';
+    options += '<option value="' + c.id + '"' + sel + '>' + esc(c.name) + '</option>';
+  });
+  var html = '<div class="chb-modal-overlay" style="display:flex;" id="chain_modal">';
+  html += '<div class="chb-modal" style="min-width:320px;">';
+  html += '<div class="chb-modal-header"><h3>更换链路</h3>';
+  html += '<button type="button" class="chb-modal-close" onclick="document.getElementById(\'chain_modal\').remove()">&times;</button></div>';
+  html += '<div class="chb-modal-body">';
+  html += '<select class="chb-input" id="chain_select_' + subnetId + '" style="width:100%;">' + options + '</select>';
+  html += '</div>';
+  html += '<div class="chb-modal-footer">';
+  html += '<button type="button" class="chb-btn chb-btn-primary" onclick="doChangeChain(' + subnetId + ')">确定</button>';
+  html += '<button type="button" class="chb-btn" onclick="document.getElementById(\'chain_modal\').remove()">取消</button>';
+  html += '</div></div></div>';
+  document.body.insertAdjacentHTML('beforeend', html);
+}
+
+function doChangeChain(subnetId) {
+  var sel = document.getElementById('chain_select_' + subnetId);
+  var chainId = sel.value;
+  document.getElementById('chain_modal').remove();
+  if (chainId) {
+    showMsg('正在绑定并重启代理...', 'info');
+    xhrPost(SUB_BIND_URL, 'id=' + subnetId + '&chain_id=' + chainId, function(x, rv) {
+      if (rv && rv.status == 'ok') { showMsg('已绑定', 'success'); loadTopology(); loadChains(); }
+      else showMsg('绑定失败', 'error');
+    });
+  } else {
+    if (!confirm('解绑链路? 将重启代理生效')) return;
+    showMsg('正在解绑...', 'info');
+    xhrPost(SUB_UNBIND_URL, 'id=' + subnetId, function(x, rv) {
+      if (rv && rv.status == 'ok') { showMsg('已解绑', 'success'); loadTopology(); loadChains(); }
+      else showMsg('解绑失败', 'error');
+    });
+  }
+}
+// ===== 链路列表 =====
+function loadChains() {
+  var area = document.getElementById('chains_list_area');
+  area.innerHTML = '<div class="chb-empty">加载中...</div>';
+  var nodeStatus = {};
+  XHR.get(INIT_STATUS_URL, null, function(x, sv) {
+    if (sv && sv.nodes) { sv.nodes.forEach(function(n) { nodeStatus[n.id] = n; }); }
+    XHR.get(STATUS_URL, null, function(x, st) {
+      proxyRunning = st && st.status == 'running';
+      XHR.get(CH_LIST_URL, null, function(x, rv) {
+        if (!rv || !rv.chains || !rv.chains.length) {
+          area.innerHTML = '<div class="chb-empty">无链路，点击「+ 添加链路」创建</div>';
+          return;
+        }
+        area.innerHTML = '';
+        var hasRunning = false;
+        rv.chains.forEach(function(c) {
+          var pathNames = c.hop_names || '';
+          var card = '<div class="chb-card"><div class="chb-card-body">';
+          card += '<div class="chb-card-actions" style="justify-content:space-between;">';
+          // 链路状态：启用+运行=运行中(绿)，启用未运行=已启用未开启(橙)，未启用=已禁用(灰)
+          var stateBadge, actBtn;
+          if (c.enabled && proxyRunning) {
+            stateBadge = '<span class="chb-badge chb-badge-green">运行中</span>';
+            actBtn = '<span class="chb-badge chb-badge-green">当前运行</span>';
+          } else if (c.enabled) {
+            stateBadge = '<span class="chb-badge chb-badge-orange">已启用未开启</span>';
+            actBtn = '<span class="chb-badge chb-badge-orange">已启用</span>';
+          } else {
+            stateBadge = '<span class="chb-badge chb-badge-gray">已禁用</span>';
+            actBtn = '<button class="chb-btn chb-btn-sm chb-btn-primary" onclick="activateChain(' + c.id + ')">启用此链路</button>';
+          }
+          card += '<div><b>' + esc(c.name) + '</b> ' + stateBadge + '</div>';
+          card += '<div class="chb-card-actions">' + actBtn + ' <button class="chb-btn chb-btn-sm" onclick="editChain(' + c.id + ')">编辑</button> <button class="chb-btn chb-btn-sm chb-btn-danger" onclick="delChain(' + c.id + ')">删除</button></div>';
+        card += '</div>';
+        if (pathNames) {
+          var names = pathNames.split(' -> ');
+          var pathHtml = '<div class="ds-hop-path">';
+          pathHtml += '<div class="ds-hop-node ds-hop-source"><span class="ds-hop-flag">🇨🇳</span><div><div class="ds-hop-name">中国移动</div></div></div>';
+          for (var hi = 0; hi < names.length; hi++) {
+            var segKey = c.id + '_' + (hi + 1);
+            var lat = vpsLatencies[segKey];
+            var latCls = lat ? (lat < 100 ? 'good' : (lat < 200 ? 'warn' : 'bad')) : 'muted';
+            var latVal = lat ? lat + 'ms' : '-';
+            pathHtml += '<div class="ds-hop-segment">';
+            pathHtml += '<span class="ds-hop-latency ' + latCls + '" id="lat_' + segKey + '">' + latVal + '</span>';
+            pathHtml += '<div class="ds-hop-line"></div>';
+            pathHtml += '</div>';
+            pathHtml += '<div class="ds-hop-node"><span class="ds-hop-flag">🌐</span><div><div class="ds-hop-name">' + esc(names[hi]) + '</div></div></div>';
+          }
+          pathHtml += '</div>';
+          card += pathHtml;
+          // 测速区块
+          card += '<div class="chb-separator-text">⚡ 链路测速</div>';
+          card += '<div class="chb-card-actions"><button class="chb-btn chb-btn-sm chb-btn-primary" onclick="runSpeedTest(' + c.id + ', this)">⚡ 全部测速</button></div>';
+        }
+        // 服务子网显示
+        var servedSubnets = subnetsCache.filter(function(s){ return s.chain_id == c.id; });
+        if (servedSubnets.length) {
+          card += '<div class="chb-stat-desc">服务子网: ' + servedSubnets.map(function(s){ return esc(s.name + ' (' + s.interface + ')'); }).join(', ') + '</div>';
+        }
+        // 关闭/启用按钮 (多链路并发模式)
+        if (c.enabled && proxyRunning) {
+          card += '<div class="chb-card-actions" style="margin-top:4px;"><button class="chb-btn chb-btn-sm chb-btn-danger" onclick="disableChain(' + c.id + ')">关闭此链路</button></div>';
+        } else if (c.enabled) {
+          card += '<div class="chb-card-actions" style="margin-top:4px;"><button class="chb-btn chb-btn-sm chb-btn-danger" onclick="disableChain(' + c.id + ')">关闭此链路</button></div>';
+        }
+        var ids = (c.hop_path || '').split(',');
+        ids.forEach(function(hid, i) {
+          hid = parseInt(hid.trim());
+          if (!hid) return;
+          var ns = nodeStatus[hid];
+          if (!ns) return;
+          var st = ns.init_status || 'pending';
+          var badge = '';
+          if (st == 'pending') { badge = '<span class="chb-badge chb-badge-gray">跳' + (i+1) + ': 待初始化</span>'; }
+          else if (st == 'running') {
+            hasRunning = true;
+            badge = '<span class="chb-badge chb-badge-orange">跳' + (i+1) + ': ⏳ ' + esc(ns.init_message || '初始化中...') + '</span>';
+          }
+          else if (st == 'ok') { badge = '<span class="chb-badge chb-badge-green">跳' + (i+1) + ': ✅ 已初始化 (port ' + ns.init_port + ')</span>'; }
+          else if (st == 'failed') {
+            badge = '<span class="chb-badge chb-badge-red">跳' + (i+1) + ': ❌ ' + esc(String(ns.init_message || '失败').substring(0, 80)) + '</span>';
+          }
+          card += '<div style="margin-top:4px;">' + badge + '</div>';
+        });
+        card += '</div></div>';
+        area.innerHTML += card;
+      });
+      if (hasRunning) {
+        if (initPollTimer) clearTimeout(initPollTimer);
+        initPollTimer = setTimeout(loadChains, 3000);
+      } else {
+        if (initPollTimer) { clearTimeout(initPollTimer); initPollTimer = null; }
+      }
+    });
+    });
+  });
+}
+
+// ===== 链路测速 =====
+function runSpeedTest(chainId, btn) {
+  btn.textContent = '⏳ 测速中…';
+  btn.disabled = true;
+  XHR.get(DIAG_URL, {chain: chainId}, function(x, rv) {
+    btn.textContent = '⚡ 全部测速';
+    btn.disabled = false;
+    if (!rv || !rv.legs) return;
+    for (var j = 0; j < rv.legs.length; j++) {
+      var key = chainId + '_' + rv.legs[j].segment;
+      vpsLatencies[key] = rv.legs[j].latency_ms;
+      var el = document.getElementById('lat_' + key);
+      if (el) {
+        var ms = rv.legs[j].latency_ms;
+        el.textContent = (ms !== null && ms !== undefined) ? ms + 'ms' : '超时';
+        el.className = 'ds-hop-latency ' + (ms ? (ms < 100 ? 'good' : (ms < 200 ? 'warn' : 'bad')) : 'muted');
+      }
+    }
+  });
+}
+
+function showAddChain() {
+  document.getElementById('chain_form_title').textContent = '添加链路';
+  document.getElementById('c_edit_id').value = '';
+  ['c_name','c_source_cidr','c_ap_mac','c_ap_ip'].forEach(function(id) {
+    document.getElementById(id).value = '';
+  });
+  document.getElementById('c_enabled').value = '1';
+  hopCounter = 0;
+  document.getElementById('hops_container').innerHTML = '';
+  addHop();
+  document.getElementById('chain_form').style.display = '';
+}
+
+function editChain(id) {
+  XHR.get(CH_GET_URL + '?id=' + id, null, function(x, rv) {
+    if (!rv || rv.error) { showMsg('获取失败', 'error'); return; }
+    document.getElementById('chain_form_title').textContent = '编辑 #' + id;
+    document.getElementById('c_edit_id').value = id;
+    document.getElementById('c_name').value = rv.name || '';
+    document.getElementById('c_source_cidr').value = rv.source_cidr || '';
+    document.getElementById('c_ap_mac').value = rv.ap_mac || '';
+    document.getElementById('c_ap_ip').value = rv.ap_ip || '';
+    document.getElementById('c_enabled').value = rv.enabled ? '1' : '0';
+
+    hopCounter = 0;
+    document.getElementById('hops_container').innerHTML = '';
+    var hops = rv.hops || [];
+    hops.forEach(function(hop) {
+      if (hop) addHop(hop);
+    });
+    document.getElementById('chain_form').style.display = '';
+  });
+}
+
+function addHop(existingHop) {
+  hopCounter++;
+  var idx = hopCounter;
+  var div = document.createElement('div');
+  div.className = 'chb-hop-row';
+  div.id = 'hop_row_' + idx;
+  div.style.cssText = 'display:flex;align-items:flex-start;gap:8px;margin-bottom:8px;flex-wrap:wrap;';
+
+  var hopData = existingHop || {};
+  var html = '<span class="chb-stat-desc" style="min-width:40px;">跳 ' + idx + '</span>';
+  html += '<input type="text" class="chb-input" id="hop_ip_' + idx + '" placeholder="IP 地址" value="' + esc(hopData.ip || '') + '" style="width:180px;">';
+  html += '<input type="text" class="chb-input" id="hop_ssh_port_' + idx + '" placeholder="端口" value="' + esc(hopData.ssh_port || defaultSshPort) + '" style="width:70px;">';
+  html += '<input type="password" class="chb-input" id="hop_ssh_password_' + idx + '" placeholder="SSH 密码" value="' + esc(hopData.ssh_password || '') + '" style="width:140px;">';
+  if (hopData.id) html += '<input type="hidden" id="hop_id_' + idx + '" value="' + hopData.id + '">';
+  html += '<button type="button" class="chb-btn chb-btn-sm chb-btn-danger" onclick="delHop(' + idx + ')">删除</button>';
+  html += '<button type="button" class="chb-btn chb-btn-sm" onclick="toggleAdvanced(' + idx + ')" id="adv_btn_' + idx + '">展开高级</button>';
+  // 高级选项区 (默认隐藏)
+  var proto = hopData.protocol || 'vless';
+  html += '<div id="adv_' + idx + '" style="display:none;width:100%;margin-top:4px;padding:8px;border:1px solid #e0e0e0;border-radius:6px;">';
+  html += '<div class="chb-form-grid" style="margin:0;">';
+  html += '<div class="chb-field"><label class="chb-label">协议</label><div class="chb-select-wrap"><select class="chb-input" id="hop_protocol_' + idx + '" onchange="toggleHopProto(' + idx + ')"><option value="vless"' + (proto=='vless'?' selected':'') + '>VLESS+REALITY</option><option value="direct"' + (proto=='direct'?' selected':'') + '>Direct</option></select></div></div>';
+  html += '<div class="chb-field"><label class="chb-label">SSH 用户</label><input type="text" class="chb-input" id="hop_ssh_user_' + idx + '" value="' + esc(hopData.ssh_user || '') + '"></div>';
+  html += '</div>';
+  // VLESS 段
+  html += '<div id="hop_vless_' + idx + '" style="' + (proto=='vless'?'':'display:none;') + 'margin-top:8px;">';
+  html += '<div class="chb-form-grid" style="margin:0;">';
+  html += '<div class="chb-field"><label class="chb-label">VLESS 端口</label><input type="text" class="chb-input" id="hop_vless_port_' + idx + '" value="' + esc(hopData.vless_port || '') + '"></div>';
+  html += '<div class="chb-field"><label class="chb-label">VLESS UUID</label><input type="text" class="chb-input" id="hop_vless_uuid_' + idx + '" value="' + esc(hopData.vless_uuid || '') + '"></div>';
+  html += '<div class="chb-field"><label class="chb-label">REALITY SNI</label><input type="text" class="chb-input" id="hop_reality_sni_' + idx + '" value="' + esc(hopData.reality_sni || '') + '"></div>';
+  html += '<div class="chb-field"><label class="chb-label">REALITY 公钥</label><input type="text" class="chb-input" id="hop_reality_public_key_' + idx + '" value="' + esc(hopData.reality_public_key || '') + '"></div>';
+  html += '</div></div>';
+  html += '</div>'; // end adv
+
+  div.innerHTML = html;
+  document.getElementById('hops_container').appendChild(div);
+}
+
+function delHop(idx) {
+  var row = document.getElementById('hop_row_' + idx);
+  if (row) row.remove();
+}
+
+function toggleAdvanced(idx) {
+  var adv = document.getElementById('adv_' + idx);
+  var btn = document.getElementById('adv_btn_' + idx);
+  if (adv.style.display == 'none') {
+    adv.style.display = '';
+    btn.textContent = '收起高级';
+  } else {
+    adv.style.display = 'none';
+    btn.textContent = '展开高级';
+  }
+}
+
+function toggleHopProto(idx) {
+  var p = document.getElementById('hop_protocol_' + idx).value;
+  document.getElementById('hop_vless_' + idx).style.display = (p == 'vless') ? '' : 'none';
+}
+
+function collectHops() {
+  var hops = [];
+  for (var i = 1; i <= hopCounter; i++) {
+    var row = document.getElementById('hop_row_' + i);
+    if (!row) continue;
+    var ipEl = document.getElementById('hop_ip_' + i);
+    if (!ipEl) continue;
+    var ip = ipEl.value.trim();
+    if (!ip) continue;
+
+    var hop = { ip: ip };
+    var sshPort = document.getElementById('hop_ssh_port_' + i).value.trim();
+    if (sshPort) hop.ssh_port = sshPort;
+    var sshPwd = document.getElementById('hop_ssh_password_' + i).value;
+    if (sshPwd) hop.ssh_password = sshPwd;
+
+    var idEl = document.getElementById('hop_id_' + i);
+    if (idEl) hop.id = parseInt(idEl.value);
+
+    // 高级选项 (如果展开了就有值)
+    var protoEl = document.getElementById('hop_protocol_' + i);
+    if (protoEl) {
+      hop.protocol = protoEl.value;
+      var sshUserEl = document.getElementById('hop_ssh_user_' + i);
+      if (sshUserEl && sshUserEl.value) hop.ssh_user = sshUserEl.value;
+
+      if (hop.protocol == 'vless') {
+        var vp = document.getElementById('hop_vless_port_' + i);
+        if (vp && vp.value) hop.vless_port = vp.value;
+        var vu = document.getElementById('hop_vless_uuid_' + i);
+        if (vu && vu.value) hop.vless_uuid = vu.value;
+        var rs = document.getElementById('hop_reality_sni_' + i);
+        if (rs && rs.value) hop.reality_sni = rs.value;
+        var rk = document.getElementById('hop_reality_public_key_' + i);
+        if (rk && rk.value) hop.reality_public_key = rk.value;
+      }
+    }
+
+    hops.push(hop);
+  }
+  return hops;
+}
+
+function saveChain() {
+  var id = document.getElementById('c_edit_id').value;
+  var name = document.getElementById('c_name').value.trim();
+  if (!name) { showMsg('名称必填', 'error'); return; }
+  var cidr = document.getElementById('c_source_cidr').value.trim();
+  // 子网 CIDR 留空时后端自动分配, 不做前端校验
+
+  var hops = collectHops();
+  if (!hops.length) { showMsg('至少需要一跳', 'error'); return; }
+
+  var d = {
+    name: name,
+    enabled: document.getElementById('c_enabled').value,
+    source_cidr: cidr,
+    ap_mac: document.getElementById('c_ap_mac').value.trim(),
+    ap_ip: document.getElementById('c_ap_ip').value.trim(),
+    hops: JSON.stringify(hops)
+  };
+
+  var url = id ? CH_UPD_URL : CH_ADD_URL;
+  if (id) d.id = id;
+
+  var ps = [];
+  for (var k in d) ps.push(k + '=' + encodeURIComponent(d[k]));
+  xhrPost(url, ps.join('&'), function(x, rv) {
+    if (rv && (rv.status == 'ok' || rv.id)) {
+      showMsg(id ? '已更新，正在初始化新节点...' : '已添加，正在初始化 VPS...', 'info');
+      if (!id && rv.node_ids) {
+        showInitProgress(rv.node_ids);
+      } else {
+        document.getElementById('chain_form').style.display = 'none';
+      }
+      loadChains();
+    } else {
+      showMsg('失败: ' + (rv && rv.error ? rv.error : rv && rv.message ? rv.message : ''), 'error');
+    }
+  });
+}
+
+function activateChain(id) {
+  if (!confirm('启用此链路?\n配置将重新生成 (其它链路不受影响)')) return;
+  showMsg('正在切换链路...', 'info');
+  xhrPost(CH_ACTIVATE_URL, 'id=' + id, function(x, rv) {
+    if (rv && rv.status == 'ok') { showMsg('链路已激活, 请到系统总览开启代理', 'success'); loadChains(); }
+    else showMsg('失败: ' + (rv && rv.error ? rv.error : ''), 'error');
+  });
+}
+
+function disableChain(id) {
+  if (!confirm('关闭此链路?\n绑定此链路的子网将临时直连, 配置将重新生成')) return;
+  showMsg('正在关闭链路并重启代理...', 'info');
+  xhrPost(CH_DISABLE_URL, 'id=' + id, function(x, rv) {
+    if (rv && rv.status == 'ok') { showMsg('链路已关闭', 'success'); loadChains(); }
+    else showMsg('关闭失败: ' + (rv && rv.error ? rv.error : ''), 'error');
+  });
+}
+
+function delChain(id) {
+  if (!confirm('确认删除链路 #' + id + '?\n将卸载 VPS 上的服务并删除所有节点')) return;
+  xhrPost(CH_DEL_URL, 'id=' + id, function(x, rv) {
+    if (rv && rv.status == 'ok') { showMsg('已删除', 'success'); loadChains(); }
+    else showMsg('删除失败', 'error');
+  });
+}
+
+
+function showInitProgress(nodeIds) {
+  var panel = document.getElementById('init_progress_panel');
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = 'init_progress_panel';
+    panel.className = 'chb-card';
+    panel.style.cssText = 'margin-top:12px;';
+    document.getElementById('chain_form').parentNode.insertBefore(panel, document.getElementById('chain_form').nextSibling);
+  }
+  panel.style.display = '';
+  panel.innerHTML = '<div class="chb-card-header"><h3 class="chb-card-title">正在初始化 VPS</h3></div><div class="chb-card-body" id="init_progress_body">加载中...</div>';
+  var pollInit = function() {
+    XHR.get(INIT_STATUS_URL, null, function(x, rv) {
+      if (!rv || !rv.nodes) return;
+      var html = '';
+      var allDone = true;
+      var nodeMap = {};
+      rv.nodes.forEach(function(n) { nodeMap[n.id] = n; });
+      nodeIds.forEach(function(nid, i) {
+        var ns = nodeMap[nid];
+        if (!ns) return;
+        html += '<div style="margin-bottom:12px;"><b>跳' + (i+1) + ': ' + esc(ns.ip) + '</b>';
+        var st = ns.init_status || 'pending';
+        if (st == 'pending') { html += ' <span class="chb-badge chb-badge-gray">待初始化</span>'; allDone = false; }
+        else if (st == 'running') {
+          allDone = false;
+          html += ' <span class="chb-badge chb-badge-orange">初始化中</span>';
+          html += '<div style="margin-left:16px;color:#e87f17;">⏳ ' + esc(ns.init_message || '初始化中...') + '</div>';
+        }
+        else if (st == 'ok') { html += ' <span class="chb-badge chb-badge-green">✅ 已初始化 (port ' + ns.init_port + ')</span>'; }
+        else if (st == 'failed') { html += ' <span class="chb-badge chb-badge-red">❌ 失败</span>'; }
+        html += '</div>';
+      });
+      document.getElementById('init_progress_body').innerHTML = html;
+      if (!allDone) { setTimeout(pollInit, 2000); }
+      else { setTimeout(function() { panel.style.display = 'none'; document.getElementById('chain_form').style.display = 'none'; loadChains(); }, 3000); }
+    });
+  };
+  pollInit();
+}
+
+function cancelChain() { document.getElementById('chain_form').style.display = 'none'; }
+
+function showMsg(m, t) {
+  var d = document.getElementById('result_msg');
+  d.style.display = 'block';
+  d.innerHTML = m;
+  d.className = 'chb-msg ' + (t == 'success' ? 'chb-msg-success' : t == 'error' ? 'chb-msg-error' : 'chb-msg-info');
+}
+
+// 先加载链路 (填充 chainsCache), 再加载拓扑 (网口卡片需要链路名映射)
+XHR.get(CH_LIST_URL, null, function(x, rv) {
+  chainsCache = (rv && rv.chains) ? rv.chains : [];
+  loadTopology();
+  loadChains();
+});
+</script>
+<%+footer%>
