@@ -946,7 +946,7 @@ function action_chains_update()
         os.execute("(/usr/bin/chb-init-node.sh uninit " .. nid_str .. " >/tmp/chb-uninit.log 2>&1) &")
     end
     -- 6. 更新链路
-    local chain_fields = {"name", "enabled", "source_cidr", "wifi_ssid", "ap_mac", "ap_ip", "policy_name"}
+    local chain_fields = {"name", "enabled", "source_cidr", "wifi_ssid", "ap_mac", "ap_ip"}
     local chain_parts = {}
     for _, key in ipairs(chain_fields) do
         local val = luci.http.formvalue(key)
@@ -958,6 +958,12 @@ function action_chains_update()
                 chain_parts[#chain_parts+1] = '"' .. key .. '":"' .. val .. '"'
             end
         end
+    end
+    -- policy_name 特殊处理: 空值也写入 (等价于 default), 不能跳过
+    do
+        local pn = luci.http.formvalue("policy_name") or ""
+        pn = pn:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n')
+        chain_parts[#chain_parts+1] = '"policy_name":"' .. pn .. '"'
     end
     chain_parts[#chain_parts+1] = '"hop_path":"' .. table.concat(new_node_ids, ",") .. '"'
     local chain_json = "{" .. table.concat(chain_parts, ",") .. "}"

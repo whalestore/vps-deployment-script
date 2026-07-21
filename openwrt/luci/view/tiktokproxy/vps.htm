@@ -443,7 +443,7 @@ function showAddChain() {
 function fillPolicySelect(selectedName) {
   var sel = document.getElementById('c_policy_name');
   var html = '<option value="">默认 (default)</option>';
-  policiesCache.forEach(function(p) {
+  policiesCache.filter(function(p){ return p.name != 'default'; }).forEach(function(p) {
     var isSel = (p.name == selectedName) ? ' selected' : '';
     html += '<option value="' + esc(p.name) + '"' + isSel + '>' + esc(p.name) + (p.display_name && p.display_name != p.name ? ' (' + esc(p.display_name) + ')' : '') + '</option>';
   });

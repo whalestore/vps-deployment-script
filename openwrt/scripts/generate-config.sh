@@ -156,7 +156,7 @@ echo "Outbounds (VLESS):"
 jq -r '.outbounds[] | "  \(.tag) (\(.type))\(if .detour then " detour=\(.detour)" else "" end)"' "$OUTPUT" 2>/dev/null
 echo ""
 echo "策略加载:"
-echo "$CHAINS_JSON" | jq -r '.[] | "  链路 \(.name) -> 策略 \(_policy_name)"' 2>/dev/null
+echo "$CHAINS_JSON" | jq -r '.[] | "  链路 \(.name) -> 策略 \(._policy_name)"' 2>/dev/null
 echo ""
 
 echo "Route rules (链路内分流):"
