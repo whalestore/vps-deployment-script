@@ -33,6 +33,18 @@
 
 部署方式：在软路由上 `git pull` 后，用 `cp` 或 `ln -s` 从 git 仓库复制/链接到运行路径。
 
+### LuCI 字节码缓存清除（重要）
+
+**每次部署 controller 后，必须清除 LuCI 字节码缓存，否则新代码不生效：**
+
+```sh
+rm -rf /tmp/luci-modulecache/*
+rm -f /tmp/luci-indexcache
+/etc/init.d/uhttpd restart
+```
+
+原因：LuCI 把 controller 编译成字节码缓存在 `/tmp/luci-modulecache/`，文件名是模块名的十六进制（如 `6C756369...` 对应 `luci.controller.tiktokproxy`）。即使源文件改了，LuCI 仍然用旧字节码，导致修改不生效。
+
 ## 代码质量要求
 
 - 修改前端/后端代码后，必须验证前后端数据一致性
