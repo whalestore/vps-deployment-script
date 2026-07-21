@@ -1,0 +1,35 @@
+# AGENTS.md - 开发规则
+
+## 版本追踪流程（强制）
+
+**禁止直接 scp 覆盖软路由上的文件。** 所有代码修改必须通过 git 版本追踪：
+
+1. 在本地代码库 `/Users/caoxuefei/Codes/xuefei/vps/` 修改代码
+2. `git commit` 提交到本地
+3. `git push` 推送到 GitHub (`git@github.com:whalestore/vps-deployment-script.git`)
+4. 在 OpenWrt 软路由上 `git pull` 拉取最新代码
+5. 部署到对应路径（如 LuCI controller / view / 脚本等）
+
+**绝对禁止**用 `cat file | ssh ... 'cat > /path'` 或 `scp` 直接覆盖软路由上的文件。这种操作：
+- 没有版本记录，出问题无法回滚
+- 本地和远程代码不一致，无法追踪改了什么
+- 多次覆盖后不知道当前运行的是哪个版本
+
+## 软路由文件部署路径
+
+| 本地路径 | 软路由路径 |
+|---------|-----------|
+| `openwrt/luci/controller/tiktokproxy.lua` | `/usr/lib/lua/luci/controller/tiktokproxy.lua` |
+| `openwrt/luci/view/tiktokproxy/vps.htm` | `/usr/lib/lua/luci/view/tiktokproxy/vps.htm` |
+| `openwrt/scripts/init-subnets.sh` | `/usr/bin/init-subnets.sh` |
+| `openwrt/scripts/generate-config.sh` | `/etc/sing-box/generate-config.sh` |
+| `openwrt/scripts/generate-config.jq` | `/etc/sing-box/generate-config.jq` |
+| `openwrt/scripts/routing-rules.json` | `/etc/sing-box/routing-rules.json` |
+
+部署方式：在软路由上 `git pull` 后，用 `cp` 或 `ln -s` 从 git 仓库复制/链接到运行路径。
+
+## 代码质量要求
+
+- 修改前端/后端代码后，必须验证前后端数据一致性
+- 页面展示的数据必须与数据库实际数据对应
+- 不得有"页面显示了但数据库没有"的幽灵数据
