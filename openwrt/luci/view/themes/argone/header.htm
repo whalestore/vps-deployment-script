@@ -1,0 +1,171 @@
+<%#
+  chuhaibo-header.htm — 出海播 (ChuhaiBo) sidebar-07 风格布局骨架
+  覆盖 luci-theme-argone 的 header.htm
+
+  Logo 品牌区全宽顶栏，侧栏 + 主区在下方左右分栏。
+  侧栏导航恢复完整 LuCI 菜单树（admin 下的所有分类 + 各分类的子页面）。
+-%>
+<%
+  local sys  = require "luci.sys"
+  local util = require "luci.util"
+  local http = require "luci.http"
+  local disp = luci.dispatcher
+  local fs   = require "nixio.fs"
+
+  local boardinfo = sys.ubus and sys.ubus("system", "board") or {}
+  local distversion = boardinfo and boardinfo.release and boardinfo.release.description or "OpenWrt"
+  local request = disp.context.path or {}
+  local title = disp.context.title or ""
+
+  local logout_url = disp.build_url("admin", "logout")
+
+  -- 当前请求的路径（用于 active 高亮）
+  local request_path = http.getenv("PATH_INFO") or ""
+
+  -- 出海播专属页面（直接作为侧栏顶部一级菜单，不放在服务分类下）
+  local chb_pages = {
+    { label = "控制面板",       url = disp.build_url("admin", "services", "tiktokproxy", "index"),    match = "admin/services/tiktokproxy/index" },
+    { label = "节点与链路管理", url = disp.build_url("admin", "services", "tiktokproxy", "vps"),     match = "admin/services/tiktokproxy/vps" },
+    { label = "分流策略",       url = disp.build_url("admin", "services", "tiktokproxy", "policies"), match = "admin/services/tiktokproxy/policies" },
+    { label = "网络状态",       url = disp.build_url("admin", "services", "tiktokproxy", "network"),  match = "admin/services/tiktokproxy/network" },
+    { label = "全局设置",       url = disp.build_url("admin", "services", "tiktokproxy", "settings"), match = "admin/services/tiktokproxy/settings" },
+    { label = "链路测速",       url = disp.build_url("admin", "services", "tiktokproxy", "speedtest"), match = "admin/services/tiktokproxy/speedtest" },
+    { label = "流量监控",       url = disp.build_url("admin", "services", "tiktokproxy", "traffic"),   match = "admin/services/tiktokproxy/traffic" },
+  }
+  local function is_active(match)
+    if not match or #match == 0 then return false end
+    return request_path:find(match, 1, true) ~= nil
+  end
+  -- 判断当前是否在出海播页面（用于高亮整个分组）
+  local in_chb = false
+  for _, p in ipairs(chb_pages) do
+    if is_active(p.match) then in_chb = true; break end
+  end
+
+  -- LuCI 系统分类，用于侧栏下方系统菜单块
+  -- 隐藏名单：菜单隐藏，实际功能仍可通过 URL 访问
+  -- - nas：包未装导致 firstchild 失败 500 报错
+  -- - services：TikTok 已独立放在顶部，且 services 下仅剩 uhttpd 不需要展示
+  -- - vpn：未使用
+  local hidden_categories = { nas = true, services = true, vpn = true }
+
+  -- Network 二级子菜单白名单（仅保留 4 个），其他隐藏
+  local network_visible_subs = { dhcp = true, firewall = true, network = true, routes = true }
+
+  local tree = disp.context.tree
+  local admin = tree.nodes and tree.nodes.admin or {}
+  local sys_categories = {}
+  for name, cat in util.kspairs(admin.nodes or {}) do
+    if cat.title and #cat.title > 0 and not cat.hidden
+       and not hidden_categories[name] then
+      sys_categories[#sys_categories+1] = { name=name, node=cat }
+    end
+  end
+
+  -- active 判断（路径以 /admin/<cat> 或 /admin/<cat>/<sub> 匹配）
+  local function cat_active(name)
+    return request[2] == name
+  end
+  local function sub_active(cat, sub)
+    return request[2] == cat and request[3] == sub
+  end
+
+  -- 取一级分类下可见的二级页面
+  -- 对 network 分类按 network_visible_subs 白名单过滤
+  local function visible_childs(node, cat_name)
+    local list = {}
+    for name, child in util.kspairs(node.nodes or {}) do
+      if child.title and #child.title > 0 and not child.hidden then
+        if cat_name == "network" and not network_visible_subs[name] then
+          -- 不在白名单内的 network 子项跳过
+        else
+          list[#list+1] = { name=name, node=child }
+        end
+      end
+    end
+    return list
+  end
+-%>
+<!DOCTYPE html>
+<html lang="<%=luci.i18n.context.lang%>">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>出海播 - <%=striptags(title or "")%></title>
+  <link rel="stylesheet" href="/luci-static/bootstrap/cascade.css">
+  <link rel="stylesheet" href="/luci-static/chuhaibo/chuhaibo-theme.css">
+  <script src="/luci-static/resources/xhr.js"></script>
+</head>
+<body>
+  <div class="chb-app">
+
+    <!-- ===== 品牌顶栏（全宽） ===== -->
+    <div class="chb-brand-bar">
+      <div class="chb-logo">
+        <svg width="20" height="20" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+          <path d="M 40 130 A 60 60 0 0 0 160 130 Z" fill="#EA3323" />
+          <polygon points="100,120 45,50 65,45" fill="#FF7A00" />
+          <polygon points="100,120 90,30 110,30" fill="#FF7A00" />
+          <polygon points="100,120 155,50 135,45" fill="#FF7A00" />
+          <circle cx="100" cy="115" r="8" fill="#FFFFFF" />
+        </svg>
+      </div>
+      <div class="chb-brand">
+        <div class="chb-brand-name">出海播</div>
+        <div class="chb-brand-sub">TikTok 跨境直播网络</div>
+      </div>
+      <div class="chb-brand-bar-spacer"></div>
+      <a class="chb-logout" href="<%=logout_url%>">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        退出
+      </a>
+    </div>
+
+    <!-- ===== 下栏：侧栏 + 主区 ===== -->
+    <div class="chb-body">
+
+      <!-- ===== 侧栏（sidebar-07 浅色，完整菜单树） ===== -->
+      <aside class="chb-sidebar">
+        <nav class="chb-sidebar-nav">
+          <!-- ===== 出海播专属（顶部） ===== -->
+          <div class="chb-nav-label">出海播</div>
+          <% for _, p in ipairs(chb_pages) do %>
+            <a class="chb-nav-item<%=is_active(p.match) and " active" or ""%>" href="<%=p.url%>">
+              <span><%=p.label%></span>
+            </a>
+          <% end %>
+
+          <!-- ===== 系统导航 ===== -->
+          <div class="chb-nav-label">系统</div>
+          <% for _, cat in ipairs(sys_categories) do
+               local subs = visible_childs(cat.node, cat.name)
+               local open = cat_active(cat.name) and #subs > 0
+          %>
+            <div class="chb-nav-group<%=open and " open" or ""%>">
+              <a class="chb-nav-item chb-nav-cat<%=cat_active(cat.name) and " active" or ""%>" href="<%=disp.build_url("admin", cat.name)%>">
+                <span><%=striptags(translate(cat.node.title))%></span>
+                <% if #subs > 0 then %>
+                <svg class="chb-nav-chevron" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                <% end %>
+              </a>
+              <% if #subs > 0 then %>
+              <div class="chb-nav-sub">
+                <% for _, sub in ipairs(subs) do %>
+                  <a class="chb-nav-item chb-nav-sub-item<%=sub_active(cat.name, sub.name) and " active" or ""%>" href="<%=disp.build_url("admin", cat.name, sub.name)%>">
+                    <span><%=striptags(translate(sub.node.title))%></span>
+                  </a>
+                <% end %>
+              </div>
+              <% end %>
+            </div>
+          <% end %>
+        </nav>
+
+        <div class="chb-sidebar-footer">
+          <%=pcdata(distversion)%>
+        </div>
+      </aside>
+
+      <!-- ===== 主内容区 ===== -->
+      <div class="chb-main">
+        <main class="chb-content" id="maincontent">

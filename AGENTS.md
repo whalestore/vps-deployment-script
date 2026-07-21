@@ -22,6 +22,7 @@
 | `openwrt/luci/controller/tiktokproxy/tiktokproxy.lua` | `/usr/lib/lua/luci/controller/tiktokproxy.lua` | 注意: 运行路径是单文件, 不是 `tiktokproxy/` 子目录, `cp` 时需改名 |
 | `openwrt/luci/view/tiktokproxy/vps.htm` | `/usr/lib/lua/luci/view/tiktokproxy/vps.htm` | |
 | `openwrt/luci/view/tiktokproxy/policies.htm` | `/usr/lib/lua/luci/view/tiktokproxy/policies.htm` | |
+| `openwrt/luci/view/themes/argone/header.htm` | `/usr/lib/lua/luci/view/themes/argone/header.htm` | 定制主题, 侧栏菜单硬编码在 chb_pages 数组里, 新增页面要改这里 |
 | `openwrt/scripts/init-subnets.sh` | `/usr/bin/init-subnets.sh` | |
 | `openwrt/scripts/_subnet-lib.sh` | `/usr/bin/_subnet-lib.sh` | |
 | `openwrt/scripts/subnet-add.sh` | `/usr/bin/subnet-add.sh` | |
