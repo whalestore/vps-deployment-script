@@ -17,22 +17,22 @@
 
 ## 软路由文件部署路径
 
-| 本地路径 | 软路由路径 |
-|---------|-----------|
-| `openwrt/luci/controller/tiktokproxy/tiktokproxy.lua` | `/usr/lib/lua/luci/controller/tiktokproxy/tiktokproxy.lua` |
-| `openwrt/luci/view/tiktokproxy/vps.htm` | `/usr/lib/lua/luci/view/tiktokproxy/vps.htm` |
-| `openwrt/luci/view/tiktokproxy/policies.htm` | `/usr/lib/lua/luci/view/tiktokproxy/policies.htm` |
-| `openwrt/scripts/init-subnets.sh` | `/usr/bin/init-subnets.sh` |
-| `openwrt/scripts/_subnet-lib.sh` | `/usr/bin/_subnet-lib.sh` |
-| `openwrt/scripts/subnet-add.sh` | `/usr/bin/subnet-add.sh` |
-| `openwrt/scripts/subnet-del.sh` | `/usr/bin/subnet-del.sh` |
-| `openwrt/scripts/subnet-list.sh` | `/usr/bin/subnet-list.sh` |
-| `openwrt/scripts/subnet-inspect.sh` | `/usr/bin/subnet-inspect.sh` |
-| `openwrt/scripts/generate-config.sh` | `/etc/sing-box/generate-config.sh` |
-| `openwrt/scripts/generate-config.jq` | `/etc/sing-box/generate-config.jq` |
-| `openwrt/scripts/policy-migrate.sh` | `/usr/bin/policy-migrate.sh` |
-| `openwrt/scripts/migrate-chain-policy.sh` | `/usr/bin/migrate-chain-policy.sh` |
-| `openwrt/scripts/routing-rules.json` | `/etc/sing-box/routing-rules.json` (升级后自动迁移到 `policies/default.json`, 旧文件改名 `.legacy`) |
+| 本地路径 | 软路由路径 | 备注 |
+|---------|-----------|------|
+| `openwrt/luci/controller/tiktokproxy/tiktokproxy.lua` | `/usr/lib/lua/luci/controller/tiktokproxy.lua` | 注意: 运行路径是单文件, 不是 `tiktokproxy/` 子目录, `cp` 时需改名 |
+| `openwrt/luci/view/tiktokproxy/vps.htm` | `/usr/lib/lua/luci/view/tiktokproxy/vps.htm` | |
+| `openwrt/luci/view/tiktokproxy/policies.htm` | `/usr/lib/lua/luci/view/tiktokproxy/policies.htm` | |
+| `openwrt/scripts/init-subnets.sh` | `/usr/bin/init-subnets.sh` | |
+| `openwrt/scripts/_subnet-lib.sh` | `/usr/bin/_subnet-lib.sh` | |
+| `openwrt/scripts/subnet-add.sh` | `/usr/bin/subnet-add.sh` | |
+| `openwrt/scripts/subnet-del.sh` | `/usr/bin/subnet-del.sh` | |
+| `openwrt/scripts/subnet-list.sh` | `/usr/bin/subnet-list.sh` | |
+| `openwrt/scripts/subnet-inspect.sh` | `/usr/bin/subnet-inspect.sh` | |
+| `openwrt/scripts/generate-config.sh` | `/etc/sing-box/generate-config.sh` | |
+| `openwrt/scripts/generate-config.jq` | `/etc/sing-box/generate-config.jq` | |
+| `openwrt/scripts/policy-migrate.sh` | `/usr/bin/policy-migrate.sh` | |
+| `openwrt/scripts/migrate-chain-policy.sh` | `/usr/bin/migrate-chain-policy.sh` | |
+| `openwrt/scripts/routing-rules.json` | `/etc/sing-box/routing-rules.json` | 升级后自动迁移到 `policies/default.json`, 旧文件改名 `.legacy` |
 
 部署方式：在软路由上 `git pull` 后，用 `cp` 或 `ln -s` 从 git 仓库复制/链接到运行路径。
 
