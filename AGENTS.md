@@ -22,6 +22,11 @@
 | `openwrt/luci/controller/tiktokproxy.lua` | `/usr/lib/lua/luci/controller/tiktokproxy.lua` |
 | `openwrt/luci/view/tiktokproxy/vps.htm` | `/usr/lib/lua/luci/view/tiktokproxy/vps.htm` |
 | `openwrt/scripts/init-subnets.sh` | `/usr/bin/init-subnets.sh` |
+| `openwrt/scripts/_subnet-lib.sh` | `/usr/bin/_subnet-lib.sh` |
+| `openwrt/scripts/subnet-add.sh` | `/usr/bin/subnet-add.sh` |
+| `openwrt/scripts/subnet-del.sh` | `/usr/bin/subnet-del.sh` |
+| `openwrt/scripts/subnet-list.sh` | `/usr/bin/subnet-list.sh` |
+| `openwrt/scripts/subnet-inspect.sh` | `/usr/bin/subnet-inspect.sh` |
 | `openwrt/scripts/generate-config.sh` | `/etc/sing-box/generate-config.sh` |
 | `openwrt/scripts/generate-config.jq` | `/etc/sing-box/generate-config.jq` |
 | `openwrt/scripts/routing-rules.json` | `/etc/sing-box/routing-rules.json` |
