@@ -1078,12 +1078,29 @@ function action_network_topology()
     end
 
     -- 5. 读取 ARP 邻居表 (设备活跃状态)
+    -- 注意: Lua 5.1 pattern 不支持 | (alternation), 不能用 (REACHABLE|STALE|...)
+    -- 改用 string.find 逐个查找状态关键字
     local arp = {}
     local neigh_out = shell_exec("ip neigh show 2>/dev/null")
     for line in neigh_out:gmatch("[^\r\n]+") do
         local ip = line:match("^(%d+%.%d+%.%d+%.%d+)")
-        local state = line:match("(REACHABLE|STALE|FAILED|DELAY|PERMANENT)")
-        if ip then arp[ip] = state or "UNKNOWN" end
+        if ip then
+            local state = "UNKNOWN"
+            -- 按优先级匹配 (REACHABLE > STALE > FAILED > DELAY > PERMANENT)
+            -- 用 string.find 而不是 pattern alternation
+            if string.find(line, "REACHABLE", 1, true) then
+                state = "REACHABLE"
+            elseif string.find(line, "PERMANENT", 1, true) then
+                state = "PERMANENT"
+            elseif string.find(line, "DELAY", 1, true) then
+                state = "DELAY"
+            elseif string.find(line, "STALE", 1, true) then
+                state = "STALE"
+            elseif string.find(line, "FAILED", 1, true) then
+                state = "FAILED"
+            end
+            arp[ip] = state
+        end
     end
 
     -- 6. 读取子网和链路绑定关系
