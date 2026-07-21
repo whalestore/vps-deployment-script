@@ -141,3 +141,22 @@ After running the script, you will get:
 ## License
 
 MIT
+
+## 软路由访问信息
+
+OpenWrt 软路由 (部署目标) 的 SSH 访问凭据:
+
+- **地址**: `192.168.7.1` (LAN-eth2 子网网关, 接 mmlive AP)
+- **用户**: `root`
+- **密码**: `password`
+- **SSH 登录**: `sshpass -p password ssh -o StrictHostKeyChecking=no root@192.168.7.1`
+- **LuCI 后台**: `http://192.168.7.1/cgi-bin/luci`
+- **TikTok 代理管理**: `http://192.168.7.1/cgi-bin/luci/admin/services/tiktokproxy`
+
+> 注意: 软路由 SSH 是 Dropbear, 不支持现代密钥交换算法 (会有 post-quantum 警告, 可忽略)。
+
+### 软路由上的 git 仓库
+
+`/root/vps-deployment-script` (从 `https://github.com/whalestore/vps-deployment-script.git` clone)
+
+部署流程见 `AGENTS.md` 的「软路由文件部署路径」章节。

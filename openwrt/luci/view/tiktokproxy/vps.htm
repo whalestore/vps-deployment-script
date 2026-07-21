@@ -42,6 +42,7 @@
       <div class="chb-field"><label class="chb-label">子网 CIDR</label><input type="text" class="chb-input" id="c_source_cidr" placeholder="留空自动分配"></div>
       <div class="chb-field"><label class="chb-label">AP MAC</label><input type="text" class="chb-input" id="c_ap_mac" placeholder="选填"></div>
       <div class="chb-field"><label class="chb-label">AP IP</label><input type="text" class="chb-input" id="c_ap_ip" placeholder="选填"></div>
+      <div class="chb-field"><label class="chb-label">分流策略</label><div class="chb-select-wrap"><select class="chb-input" id="c_policy_name"><option value="">默认 (default)</option></select></div></div>
     </div>
 
     <div class="chb-separator-text">出海路径（按顺序填写，可增删）</div>
@@ -137,8 +138,11 @@ var SUB_UNBIND_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy
 var IFACE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","interfaces_list")%>';
 var TOPOLOGY_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","network_topology")%>';
 var CH_DISABLE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_disable")%>';
+var POLICIES_LIST_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","policies_list")%>';
+var CH_BIND_POLICY_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","chains_bind_policy")%>';
 var subnetsCache = [];   // 子网列表缓存 (供链路卡片显示服务子网)
 var chainsCache = [];    // 链路列表缓存 (供子网绑定下拉)
+var policiesCache = [];   // 策略列表缓存 (供链路卡片下拉)
 
 var defaultSshPort = 22;
 var hopCounter = 0;
@@ -352,6 +356,15 @@ function loadChains() {
         if (servedSubnets.length) {
           card += '<div class="chb-stat-desc">服务子网: ' + servedSubnets.map(function(s){ return esc(s.name + ' (' + s.interface + ')'); }).join(', ') + '</div>';
         }
+        // 分流策略下拉
+        var currentPolicy = c.policy_name || 'default';
+        var policyOptions = '<option value="default"' + (currentPolicy == 'default' ? ' selected' : '') + '>默认 (default)</option>';
+        policyOptions += policiesCache.filter(function(p){ return p.name != 'default'; }).map(function(p) {
+          var sel = (p.name == currentPolicy) ? ' selected' : '';
+          var label = p.name === p.display_name ? p.name : (p.name + ' (' + p.display_name + ')');
+          return '<option value="' + esc(p.name) + '"' + sel + '>' + esc(label) + '</option>';
+        }).join('');
+        card += '<div class="chb-stat-desc" style="margin-top:6px;">&#127919; 分流策略: <select onchange="bindPolicy(' + c.id + ', this.value)" style="margin-left:4px;">' + policyOptions + '</select></div>';
         // 关闭/启用按钮 (多链路并发模式)
         if (c.enabled && proxyRunning) {
           card += '<div class="chb-card-actions" style="margin-top:4px;"><button class="chb-btn chb-btn-sm chb-btn-danger" onclick="disableChain(' + c.id + ')">关闭此链路</button></div>';
@@ -419,10 +432,22 @@ function showAddChain() {
     document.getElementById(id).value = '';
   });
   document.getElementById('c_enabled').value = '1';
+  // 填充策略下拉
+  fillPolicySelect('');
   hopCounter = 0;
   document.getElementById('hops_container').innerHTML = '';
   addHop();
   document.getElementById('chain_form').style.display = '';
+}
+
+function fillPolicySelect(selectedName) {
+  var sel = document.getElementById('c_policy_name');
+  var html = '<option value="">默认 (default)</option>';
+  policiesCache.filter(function(p){ return p.name != 'default'; }).forEach(function(p) {
+    var isSel = (p.name == selectedName) ? ' selected' : '';
+    html += '<option value="' + esc(p.name) + '"' + isSel + '>' + esc(p.name) + (p.display_name && p.display_name != p.name ? ' (' + esc(p.display_name) + ')' : '') + '</option>';
+  });
+  sel.innerHTML = html;
 }
 
 function editChain(id) {
@@ -435,6 +460,8 @@ function editChain(id) {
     document.getElementById('c_ap_mac').value = rv.ap_mac || '';
     document.getElementById('c_ap_ip').value = rv.ap_ip || '';
     document.getElementById('c_enabled').value = rv.enabled ? '1' : '0';
+    // 填充策略下拉
+    fillPolicySelect(rv.policy_name || '');
 
     hopCounter = 0;
     document.getElementById('hops_container').innerHTML = '';
@@ -564,6 +591,7 @@ function saveChain() {
     source_cidr: cidr,
     ap_mac: document.getElementById('c_ap_mac').value.trim(),
     ap_ip: document.getElementById('c_ap_ip').value.trim(),
+    policy_name: document.getElementById('c_policy_name').value,
     hops: JSON.stringify(hops)
   };
 
@@ -610,6 +638,15 @@ function delChain(id) {
   xhrPost(CH_DEL_URL, 'id=' + id, function(x, rv) {
     if (rv && rv.status == 'ok') { showMsg('已删除', 'success'); loadChains(); }
     else showMsg('删除失败', 'error');
+  });
+}
+
+function bindPolicy(chainId, policyName) {
+  if (!confirm('切换分流策略为 ' + policyName + '?\n将重新生成配置并重启 sing-box')) return;
+  showMsg('正在应用策略...', 'info');
+  xhrPost(CH_BIND_POLICY_URL, 'chain_id=' + chainId + '&policy_name=' + encodeURIComponent(policyName), function(x, rv) {
+    if (rv && rv.status == 'ok') { showMsg('策略已切换', 'success'); loadChains(); }
+    else showMsg('切换失败: ' + (rv && rv.error ? rv.error : ''), 'error');
   });
 }
 
@@ -664,11 +701,14 @@ function showMsg(m, t) {
   d.className = 'chb-msg ' + (t == 'success' ? 'chb-msg-success' : t == 'error' ? 'chb-msg-error' : 'chb-msg-info');
 }
 
-// 先加载链路 (填充 chainsCache), 再加载拓扑 (网口卡片需要链路名映射)
+// 先加载链路 (填充 chainsCache) + 策略 (填充 policiesCache), 再加载拓扑 + 链路卡片
 XHR.get(CH_LIST_URL, null, function(x, rv) {
   chainsCache = (rv && rv.chains) ? rv.chains : [];
-  loadTopology();
-  loadChains();
+  XHR.get(POLICIES_LIST_URL, null, function(x2, pv) {
+    policiesCache = (pv && pv.policies) ? pv.policies : [];
+    loadTopology();
+    loadChains();
+  });
 });
 </script>
 <%+footer%>

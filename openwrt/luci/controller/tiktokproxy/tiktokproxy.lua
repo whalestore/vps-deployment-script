@@ -393,6 +393,7 @@ function index()
     entry({"admin", "services", "tiktokproxy", "vps"}, template("tiktokproxy/vps"), _("节点与链路管理"), 15)
     entry({"admin", "services", "tiktokproxy", "network"}, template("tiktokproxy/network"), _("网络状态"), 20)
     entry({"admin", "services", "tiktokproxy", "settings"}, template("tiktokproxy/settings"), _("全局设置"), 25)
+    entry({"admin", "services", "tiktokproxy", "policies"}, template("tiktokproxy/policies"), _("分流策略"), 18)
     entry({"admin", "services", "tiktokproxy", "traffic"}, template("tiktokproxy/traffic"), _("流量监控"), 40)
     -- 控制面板 API
     entry({"admin", "services", "tiktokproxy", "status"}, call("action_status"))
@@ -415,6 +416,14 @@ function index()
     entry({"admin", "services", "tiktokproxy", "chains_apply"}, call("action_chains_apply"))
     entry({"admin", "services", "tiktokproxy", "chains_activate"}, call("action_chains_activate"))
     entry({"admin", "services", "tiktokproxy", "chains_disable"}, call("action_chains_disable"))
+    -- 分流策略管理 API
+    entry({"admin", "services", "tiktokproxy", "policies_list"}, call("action_policies_list"))
+    entry({"admin", "services", "tiktokproxy", "policies_get"}, call("action_policies_get"))
+    entry({"admin", "services", "tiktokproxy", "policies_save"}, call("action_policies_save"))
+    entry({"admin", "services", "tiktokproxy", "policies_delete"}, call("action_policies_delete"))
+    entry({"admin", "services", "tiktokproxy", "policies_clone"}, call("action_policies_clone"))
+    -- 链路绑策略 API
+    entry({"admin", "services", "tiktokproxy", "chains_bind_policy"}, call("action_chains_bind_policy"))
     -- 子网 (设备) 管理 API (网络层增删改已挪到 SSH 脚本, 网页只读 + 换绑链路)
     entry({"admin", "services", "tiktokproxy", "subnets_list"}, call("action_subnets_list"))
     entry({"admin", "services", "tiktokproxy", "network_topology"}, call("action_network_topology"))
@@ -731,7 +740,7 @@ function action_chains_add()
     end
     log_api("chains_add", "name=" .. chain_name .. " wifi=" .. wifi_ssid .. " cidr=" .. source_cidr)
     -- 2. 收集链路元信息
-    local chain_fields = {"name", "enabled", "wifi_ssid", "ap_mac", "ap_ip"}
+    local chain_fields = {"name", "enabled", "wifi_ssid", "ap_mac", "ap_ip", "policy_name"}
     local chain_parts = {}
     for _, key in ipairs(chain_fields) do
         local val = luci.http.formvalue(key)
@@ -949,6 +958,12 @@ function action_chains_update()
                 chain_parts[#chain_parts+1] = '"' .. key .. '":"' .. val .. '"'
             end
         end
+    end
+    -- policy_name 特殊处理: 空值也写入 (等价于 default), 不能跳过
+    do
+        local pn = luci.http.formvalue("policy_name") or ""
+        pn = pn:gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', '\\n')
+        chain_parts[#chain_parts+1] = '"policy_name":"' .. pn .. '"'
     end
     chain_parts[#chain_parts+1] = '"hop_path":"' .. table.concat(new_node_ids, ",") .. '"'
     local chain_json = "{" .. table.concat(chain_parts, ",") .. "}"
@@ -1772,4 +1787,210 @@ function action_update_config()
             has_token = has_token
         })
     end
+end
+-- ---------------------------------------------------------------
+-- 分流策略管理 API
+-- ---------------------------------------------------------------
+POLICIES_DIR = "/etc/sing-box/policies"
+
+function action_policies_list()
+    log_api("policies_list", "")
+    local result = {}
+    local f = io.popen("ls " .. POLICIES_DIR .. "/*.json 2>/dev/null")
+    if f then
+        for line in f:lines() do
+            line = line:gsub("^%s+", ""):gsub("%s+$", "")
+            -- 提取文件名 (去掉路径和 .json)
+            local fname = line:match("([^/]+)%.json$")
+            if fname and fname:match("^[a-z0-9-]+$") then
+                -- 读 name/notes (fname 已校验, 防命令注入)
+                local content = shell_exec("cat " .. line .. " 2>/dev/null")
+                local parsed = parse_json(content) or {}
+                result[#result+1] = {
+                    name = fname,
+                    display_name = parsed.name or fname,
+                    notes = parsed.notes or "",
+                    is_default = (fname == "default")
+                }
+            end
+        end
+        f:close()
+    end
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({policies = result})
+end
+
+function action_policies_get()
+    local name = luci.http.formvalue("name") or ""
+    if not name:match("^[a-z0-9-]+$") then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "invalid name"})
+        return
+    end
+    local file_path = POLICIES_DIR .. "/" .. name .. ".json"
+    if not nixio.fs.access(file_path) then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "policy not found"})
+        return
+    end
+    local content = shell_exec("cat " .. file_path)
+    local parsed = parse_json(content)
+    if not parsed then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "policy JSON invalid"})
+        return
+    end
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({
+        name = name,
+        display_name = parsed.name or name,
+        notes = parsed.notes or "",
+        rule_sets = parsed.rule_sets or {},
+        direct_domain_suffix = parsed.direct_domain_suffix or {},
+        proxy_domain_suffix = parsed.proxy_domain_suffix or {},
+        is_default = (name == "default")
+    })
+end
+
+function action_policies_save()
+    local name = luci.http.formvalue("name") or ""
+    local display_name = luci.http.formvalue("display_name") or ""
+    local notes = luci.http.formvalue("notes") or ""
+    local content = luci.http.formvalue("content") or ""
+
+    -- 1. 校验 name 格式
+    if not name:match("^[a-z0-9-]+$") then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "name 只允许小写字母/数字/连字符"})
+        return
+    end
+    if #name < 1 or #name > 32 then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "name 长度 1-32"})
+        return
+    end
+
+    -- 2. 校验 content 是合法 JSON
+    local parsed = parse_json(content)
+    if not parsed then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "content 不是合法 JSON"})
+        return
+    end
+    -- 注入/覆盖 name/notes (以表单字段为准)
+    parsed.name = display_name
+    parsed.notes = notes
+
+    -- 3. 确保 policies 目录存在
+    os.execute("mkdir -p " .. POLICIES_DIR)
+
+    -- 4. 原子写: 临时文件 + rename
+    local file_path = POLICIES_DIR .. "/" .. name .. ".json"
+    local tmp_path = file_path .. ".tmp"
+    local f = io.open(tmp_path, "w")
+    if not f then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "无法写入文件"})
+        return
+    end
+    f:write(require("luci.jsonc").stringify(parsed))
+    f:close()
+    if os.execute("mv " .. tmp_path .. " " .. file_path) ~= 0 then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "文件重命名失败"})
+        return
+    end
+
+    log_api("policies_save", "name=" .. name .. " display=" .. display_name)
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({status = "ok", name = name})
+end
+
+function action_policies_delete()
+    local name = luci.http.formvalue("name") or ""
+    if name == "default" then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "默认策略不可删除"})
+        return
+    end
+    if not name:match("^[a-z0-9-]+$") then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "invalid name"})
+        return
+    end
+    -- 检查是否有链路在用此策略
+    local chains = parse_json(db_cmd("list-chains")) or {}
+    for _, c in ipairs(chains) do
+        if c.policy_name == name then
+            luci.http.prepare_content("application/json")
+            luci.http.write_json({error = "链路 #" .. c.id .. " (" .. (c.name or "?") .. ") 仍在使用此策略, 请先换绑"})
+            return
+        end
+    end
+    local file_path = POLICIES_DIR .. "/" .. name .. ".json"
+    os.execute("rm -f " .. file_path)
+    log_api("policies_delete", "name=" .. name)
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({status = "ok"})
+end
+
+function action_policies_clone()
+    local src = luci.http.formvalue("src") or ""
+    local dest = luci.http.formvalue("dest") or ""
+    if not src:match("^[a-z0-9-]+$") or not dest:match("^[a-z0-9-]+$") then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "invalid src or dest name"})
+        return
+    end
+    if #dest < 1 or #dest > 32 then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "dest name 长度 1-32"})
+        return
+    end
+    local src_path = POLICIES_DIR .. "/" .. src .. ".json"
+    local dest_path = POLICIES_DIR .. "/" .. dest .. ".json"
+    if not nixio.fs.access(src_path) then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "源策略不存在"})
+        return
+    end
+    if nixio.fs.access(dest_path) then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "目标策略已存在"})
+        return
+    end
+    os.execute("cp " .. src_path .. " " .. dest_path)
+    log_api("policies_clone", "src=" .. src .. " dest=" .. dest)
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({status = "ok", name = dest})
+end
+
+function action_chains_bind_policy()
+    local chain_id = luci.http.formvalue("chain_id") or ""
+    local policy_name = luci.http.formvalue("policy_name") or ""
+    if not chain_id:match("^%d+$") then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "invalid chain_id"})
+        return
+    end
+    -- 空 policy_name = 用 default
+    if policy_name == "" then policy_name = "default" end
+    if not policy_name:match("^[a-z0-9-]+$") then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "invalid policy_name"})
+        return
+    end
+    -- 校验策略文件存在
+    local file_path = POLICIES_DIR .. "/" .. policy_name .. ".json"
+    if not nixio.fs.access(file_path) then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "策略文件不存在: " .. policy_name})
+        return
+    end
+    log_api("chains_bind_policy", "chain=" .. chain_id .. " policy=" .. policy_name)
+    db_cmd("update-chain " .. chain_id .. " '{\"policy_name\":\"" .. policy_name .. "\"}'")
+    local ok = apply_config()
+    log_api("chains_bind_policy", "apply_config=" .. tostring(ok))
+    luci.http.prepare_content("application/json")
+    luci.http.write_json({status = ok and "ok" or "error", chain_id = tonumber(chain_id), policy_name = policy_name})
 end
