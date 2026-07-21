@@ -1,9 +1,9 @@
 # generate-config.jq - sing-box 配置生成的 jq 脚本
-# 由 generate-config.sh 调用, 输入: --slurpfile chains + --slurpfile routing + --arg dns_detour + --arg final_tag
+# 由 generate-config.sh 调用, 输入: --slurpfile chains + --slurpfile default + --arg dns_detour + --arg final_tag
 
-# 输入: chains 数组 (含 hops + resolved_cidrs) + routing rules
+# 输入: chains 数组 (含 hops + resolved_cidrs + _policy_content) + default 策略
 def chains: $chains[0];
-def routing: $routing[0];
+def default_policy: $default[0];
 
 # 为单个 hop 生成 VLESS outbound 对象
 def hop_vless_outbound(chain_id; hop_idx; hop; prev_tag):
@@ -49,7 +49,7 @@ def all_vless_outbounds:
 def chain_final_tag(chain):
     "chain" + (chain.id|tostring) + "-hop" + ((chain.hops|length)|tostring);
 
-# 生成分流规则: 对每条链路的每个子网, 按 routing-rules.json 生成域名级分流
+# 生成分流规则: 对每条链路的每个子网, 按 chain._policy_content 生成域名级分流
 # 规则顺序: 强制代理域名 -> geosite-cn 直连 -> geoip-cn 直连 -> 自定义直连域名 -> 默认走链路
 # 注意: 链路未绑定子网时 (resolved_cidrs 为空或无效), 不生成分流规则
 def is_valid_cidr:
@@ -60,9 +60,10 @@ def chain_routing_rules(chain):
     (chain_final_tag($c)) as $tag |
     # 过滤无效 cidr: 只保留有效的 "x.x.x.x/n" 前缀
     ($c.resolved_cidrs | map(select(is_valid_cidr))) as $valid_cidrs |
-    (routing.rule_sets // []) as $rule_sets |
-    (routing.direct_domain_suffix // []) as $direct_domains |
-    (routing.proxy_domain_suffix // []) as $proxy_domains |
+    # 从链路内嵌的策略内容取规则 (不再用全局 routing)
+    ($c._policy_content.rule_sets // []) as $rule_sets |
+    ($c._policy_content.direct_domain_suffix // []) as $direct_domains |
+    ($c._policy_content.proxy_domain_suffix // []) as $proxy_domains |
     # 没有有效 cidr 时返回空数组 (不生成分流规则, 链路 outbound 仍存在)
     if ($valid_cidrs | length) == 0 then []
     else
@@ -107,7 +108,7 @@ def all_routing_rules:
             # 国内域名用本地 DNS 解析 (快速)
             { rule_set: "geosite-cn", server: "local-dns" },
             # 其他域名用 8.8.8.8 解析 (避免污染)
-            { domain_suffix: (routing.proxy_domain_suffix // []), server: "proxy-dns" }
+            { domain_suffix: (default_policy.proxy_domain_suffix // []), server: "proxy-dns" }
         ],
         final: "proxy-dns"
     },
@@ -123,7 +124,8 @@ def all_routing_rules:
     }],
     outbounds: (all_vless_outbounds + [{tag: "direct", type: "direct"}]),
     route: {
-        rule_set: (routing.rule_sets // []),
+        # 去重合并所有链路策略的 rule_sets (按 tag 去重)
+        rule_set: ([chains[] | ._policy_content.rule_sets // [] | .[]] | unique_by(.tag)),
         rules: all_routing_rules,
         final: $final_tag,
         auto_detect_interface: true
