@@ -32,6 +32,7 @@
 | `openwrt/scripts/generate-config.jq` | `/etc/sing-box/generate-config.jq` | |
 | `openwrt/scripts/policy-migrate.sh` | `/usr/bin/policy-migrate.sh` | |
 | `openwrt/scripts/migrate-chain-policy.sh` | `/usr/bin/migrate-chain-policy.sh` | |
+| `openwrt/scripts/vps-db.sh` | `/usr/bin/vps-db.sh` | vps.db 读写工具 (节点/链路/子网/策略 CRUD)。注意: 运行路径是 `/usr/bin/`, 不是 `/etc/sing-box/` |
 | `openwrt/scripts/routing-rules.json` | `/etc/sing-box/routing-rules.json` | 升级后自动迁移到 `policies/default.json`, 旧文件改名 `.legacy` |
 
 部署方式：在软路由上 `git pull` 后，用 `cp` 或 `ln -s` 从 git 仓库复制/链接到运行路径。
