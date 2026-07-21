@@ -99,16 +99,17 @@ ok "尚无子网记录"
 echo ""
 
 # ---------------------------------------------------------------
-# 检查 br-lan 最后成员保护
+# 检查 br-lan 最后成员 (允许拆光, 只警告)
 # ---------------------------------------------------------------
 REMAINING=$(count_brlan_remaining "$IFACE")
 if [ "$REMAINING" = "0" ]; then
-    err "$IFACE 是 br-lan 最后一个成员, 拆出后 br-lan 将无物理口"
-    warn "如确需拆出, 请先把另一个口加入 br-lan, 或用 init-subnets.sh --rollback 回滚所有子网"
-    exit 1
+    warn "$IFACE 是 br-lan 最后一个成员, 拆出后 br-lan IP 将不可达"
+    warn "SSH/LuCI 通过新子网网关 IP 仍可访问 (见脚本末尾输出)"
+    echo ""
+else
+    ok "拆出后 br-lan 还剩 $REMAINING 个成员"
+    echo ""
 fi
-ok "拆出后 br-lan 还剩 $REMAINING 个成员"
-echo ""
 
 # ---------------------------------------------------------------
 # 分配 CIDR

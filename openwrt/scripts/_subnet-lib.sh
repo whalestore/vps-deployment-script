@@ -108,10 +108,13 @@ count_brlan_remaining() {
     echo "$count"
 }
 
-# 安全红线: 从 br-lan 移除网口, 拒绝移除最后一个成员
+# 从 br-lan 移除网口 (允许拆光, 拆光时 br-lan IP 失联但子网网关可达)
 # 参数: $1 = 要移除的网口名
-# 返回: 0 成功 (已执行 uci set), 1 失败 (最后一个成员或出错)
+# 返回: 0 成功 (已执行 uci set), 1 失败 (iface 为空或出错)
 # 注意: 调用方需自行 commit
+# 设计变更 (2026-07-21): 之前版本会拒绝拆最后一个成员, 但这与"全量拆分"
+#   目标矛盾。用户明确通过子网网关 IP 管理, 不依赖 br-lan IP, 所以移除拒绝逻辑,
+#   只在拆光时给警告。失联的是 br-lan IP, 不是软路由本身。
 safe_remove_from_brlan() {
     local iface="$1"
     if [ -z "$iface" ]; then
@@ -120,9 +123,8 @@ safe_remove_from_brlan() {
     fi
     local remaining=$(count_brlan_remaining "$iface")
     if [ "$remaining" = "0" ]; then
-        err "$iface 是 br-lan 最后一个成员, 拆出后 br-lan 将无物理口, 拒绝操作"
-        warn "如确需拆出, 请先用 subnet-add.sh 拆另一个口, 或 init-subnets.sh --rollback 回滚所有"
-        return 1
+        warn "$iface 是 br-lan 最后一个成员, 拆出后 br-lan IP 将不可达"
+        warn "SSH/LuCI 通过子网网关 IP 仍可访问 (见脚本末尾 print_luci_urls 输出)"
     fi
     local lan_ifname=$(get_brlan_members)
     local new_ifname=""

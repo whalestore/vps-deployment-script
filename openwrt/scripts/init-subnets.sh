@@ -241,14 +241,13 @@ for iface in $TARGET_IFACES; do
     echo "  网关: $GATEWAY"
     echo "  UCI 接口: $UCI_NAME"
 
-    # 从 br-lan 移除 (安全红线在 safe_remove_from_brlan 内)
+    # 从 br-lan 移除 (允许拆光, 只警告; dry-run 模式下也只打印不拒绝)
     if [ "$DRY_RUN" = "true" ]; then
         remaining=$(count_brlan_remaining "$iface")
         if [ "$remaining" = "0" ]; then
-            warn "[dry-run] $iface 是 br-lan 最后一个成员, 真实执行将被拒绝"
-        else
-            exec_cmd "safe_remove_from_brlan '$iface'"
+            warn "[dry-run] $iface 是 br-lan 最后一个成员, 拆出后 br-lan IP 将不可达 (通过子网网关仍可访问)"
         fi
+        exec_cmd "safe_remove_from_brlan '$iface'"
     else
         if ! safe_remove_from_brlan "$iface"; then
             err "无法从 br-lan 移除 $iface, 跳过该口"
@@ -263,10 +262,10 @@ for iface in $TARGET_IFACES; do
     SUBNET_JSON="{\"name\":\"LAN-$iface\",\"interface\":\"$iface\",\"cidr\":\"$CIDR\",\"gateway\":\"$GATEWAY\"}"
     exec_cmd "add_subnet_to_db '$SUBNET_JSON'"
 
-    # 检查 br-lan 是否还有成员
+    # 检查 br-lan 是否还有成员 (只警告, 不阻止)
     REMAINING=$(count_brlan_remaining "$iface")
     if [ "$REMAINING" = "0" ]; then
-        warn "br-lan 将无物理成员! br-lan IP 不可达, 但 SSH 通过子网网关仍可达"
+        warn "br-lan 将无物理成员! br-lan IP 不可达, 但 SSH/LuCI 通过子网网关仍可达"
     fi
 done
 

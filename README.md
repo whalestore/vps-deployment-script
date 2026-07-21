@@ -127,9 +127,10 @@ After running the script, you will get:
 
 - 所有写操作支持 `--dry-run` 预演
 - `init-subnets.sh --rollback` 一键回滚所有子网
-- **br-lan 最后一个成员禁止拆出** (内置安全红线, 拆出会导致管理 IP 失联)
+- **br-lan 拆光时会警告但不阻止** (拆光后 br-lan IP 失联, 通过子网网关 IP 管理)
 - 执行前自动备份 UCI 配置到 `/tmp/network.bak.<timestamp>`
 - 写操作顺序: UCI 成功 -> vps.db (保证一致性)
+- `init-subnets.sh` 执行完打印所有可访问的 LuCI URL, 防止拆光后找不到管理入口
 
 ### 设计原则
 
