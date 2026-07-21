@@ -76,6 +76,67 @@ After running the script, you will get:
 2. **QR Code**: `subscription_qr.png` (Scan with supported mobile apps)
 3. **Raw Links**: Displayed in the terminal and saved to `subscriptions.txt`.
 
+## 子网管理
+
+子网的**网络层操作**(创建/删除)会断网, 只能通过 SSH 脚本执行, 不能在网页操作。
+网页只负责展示子网状态 + 绑定/解绑链路(不会断网)。
+
+### 脚本一览
+
+部署到软路由 `/usr/bin/` 下, 本地源码在 `openwrt/scripts/`。
+
+| 脚本 | 功能 | 会断网 |
+|------|------|--------|
+| `init-subnets.sh` | 批量初始化所有 LAN 口 / 回滚 | 是 |
+| `subnet-add.sh <iface>` | 单个口拆出子网 | 是 |
+| `subnet-del.sh <iface\|id>` | 删子网, 网口还回 br-lan | 是 |
+| `subnet-list.sh` | 列出所有子网 | 否 |
+| `subnet-inspect.sh <iface\|id>` | 查看单个子网详情 | 否 |
+
+所有写操作共享 `_subnet-lib.sh` 库, 提供物理网口发现/CIDR 分配/UCI 操作/最后成员保护等公共函数。
+
+### 典型流程
+
+1. **系统初始化** (一次性):
+   ```sh
+   init-subnets.sh --dry-run        # 审核将要做什么
+   init-subnets.sh --test eth0      # 单口测试
+   init-subnets.sh                  # 全量执行
+   ```
+   执行完会打印所有可访问的 LuCI URL (如 `http://192.168.6.1/cgi-bin/luci`)。
+
+2. **后期新增子网** (远程 SSH):
+   ```sh
+   subnet-add.sh eth3 --dry-run     # 预演
+   subnet-add.sh eth3               # 执行
+   ```
+
+3. **后期删除子网** (远程 SSH):
+   ```sh
+   subnet-del.sh eth0 --dry-run     # 预演
+   subnet-del.sh eth0               # 执行
+   ```
+
+4. **查看状态**:
+   ```sh
+   subnet-list.sh                   # 列出所有
+   subnet-inspect.sh eth0           # 查看详情 (含 DHCP 租约/ARP)
+   ```
+
+### 安全机制
+
+- 所有写操作支持 `--dry-run` 预演
+- `init-subnets.sh --rollback` 一键回滚所有子网
+- **br-lan 最后一个成员禁止拆出** (内置安全红线, 拆出会导致管理 IP 失联)
+- 执行前自动备份 UCI 配置到 `/tmp/network.bak.<timestamp>`
+- 写操作顺序: UCI 成功 -> vps.db (保证一致性)
+
+### 设计原则
+
+- **脚本是子网网络层操作的唯一真相源**: 创建/删除/批量初始化都走脚本
+- **网页只读 + 换绑**: 展示子网状态、绑定/解绑链路(不会断网)在网页做
+- **批量初始化只在系统初始化时跑一次**, 后期通过 SSH 单个增删
+
 ## License
 
 MIT
