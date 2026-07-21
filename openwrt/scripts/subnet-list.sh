@@ -24,7 +24,8 @@ fi
 . "$SUBNET_LIB"
 
 OUTPUT_FORMAT="table"
-[ "$1" = "--json" ] 2>/dev/null && OUTPUT_FORMAT="json"
+# $1 可能未传, 用 ${1:-} 避免 set -u 报错
+[ "${1:-}" = "--json" ] && OUTPUT_FORMAT="json"
 
 SUBNETS=$(list_subnets_from_db)
 CHAINS=$(vps-db.sh list-chains 2>/dev/null)

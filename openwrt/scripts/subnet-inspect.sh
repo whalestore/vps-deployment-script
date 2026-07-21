@@ -26,7 +26,7 @@ if [ ! -f "$SUBNET_LIB" ]; then
 fi
 . "$SUBNET_LIB"
 
-KEY="$1"
+KEY="${1:-}"
 if [ -z "$KEY" ]; then
     err "用法: subnet-inspect.sh <iface|subnet_id>"
     exit 1
