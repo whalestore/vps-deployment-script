@@ -161,110 +161,6 @@ function get_available_interfaces()
     end
     return require("luci.jsonc").stringify(result)
 end
--- 为子网配置网络: 把 interface 从 br-lan 移出, 建独立接口 + DHCP + 防火墙
--- subnet 参数: {interface=, cidr=, gateway=, name=}
--- 返回 true/false; 失败时已落 log_api
-function apply_subnet_network(subnet)
-    local iface = subnet.interface or ""
-    local cidr = subnet.cidr or ""
-    local gw = subnet.gateway or ""
-    local name = subnet.name or ""
-    if iface == "" or cidr == "" then
-        log_api("subnet_network", "apply FAIL: interface/cidr 为空")
-        return false
-    end
-    -- 网关默认从 cidr 派生 .1
-    if gw == "" then
-        gw = cidr:gsub("%.0/24$", ".1")
-    end
-    -- 备份
-    shell_exec("uci show network > /tmp/network.bak.$(date +%s) 2>/dev/null")
-    log_api("subnet_network", "apply: iface=" .. iface .. " cidr=" .. cidr .. " gw=" .. gw .. " name=" .. name)
-    -- 1. 从 br-lan 移除该网口 (保留其它成员)
-    --    读当前 lan.ifname, 去掉 iface (注意: 只 trim 首尾空格, 不能删中间空格)
-    local lan_ifname = shell_exec("uci get network.lan.ifname 2>/dev/null"):gsub("^%s+", ""):gsub("%s+$", "")
-    -- 安全红线: 计算 br-lan 移除该网口后剩余成员数, 禁止拆走最后一个成员
-    local remaining_count = 0
-    for part in lan_ifname:gmatch("%S+") do
-        if part ~= iface then remaining_count = remaining_count + 1 end
-    end
-    if remaining_count == 0 then
-        log_api("subnet_network", "apply FAIL: " .. iface .. " 是 br-lan 最后一个成员, 拆出后 br-lan 将无物理口, 拒绝操作")
-        return false
-    end
-    local new_ifname = ""
-    for part in lan_ifname:gmatch("%S+") do
-        if part ~= iface then
-            if new_ifname == "" then new_ifname = part else new_ifname = new_ifname .. " " .. part end
-        end
-    end
-    shell_exec("uci set network.lan.ifname='" .. new_ifname .. "'")
-    log_api("subnet_network", "apply step1: br-lan ifname 旧='" .. lan_ifname .. "' 新='" .. new_ifname .. "'")
-    -- 2. 新建接口 (用 sub_<id> 命名, 但此处无 id, 用接口名衍生: lan_<iface 末位>)
-    local ifname_short = iface:gsub("eth", "lan")
-    shell_exec("uci set network." .. ifname_short .. "=interface")
-    shell_exec("uci set network." .. ifname_short .. ".proto='static'")
-    shell_exec("uci set network." .. ifname_short .. ".ifname='" .. iface .. "'")
-    shell_exec("uci set network." .. ifname_short .. ".ipaddr='" .. gw .. "'")
-    shell_exec("uci set network." .. ifname_short .. ".netmask='255.255.255.0'")
-    log_api("subnet_network", "apply step2: 新建接口 " .. ifname_short .. " ifname=" .. iface .. " ip=" .. gw)
-    -- 3. DHCP 池
-    local pool_start = gw:gsub("%.%d+$", ".100")
-    shell_exec("uci set dhcp." .. ifname_short .. "=dhcp")
-    shell_exec("uci set dhcp." .. ifname_short .. ".interface='" .. ifname_short .. "'")
-    shell_exec("uci set dhcp." .. ifname_short .. ".start='100'")
-    shell_exec("uci set dhcp." .. ifname_short .. ".limit='50'")
-    shell_exec("uci set dhcp." .. ifname_short .. ".leasetime='12h'")
-    -- 4. 防火墙: 加入 lan zone
-    shell_exec("uci add_list firewall.@zone[0].network='" .. ifname_short .. "'")
-    -- 5. commit
-    shell_exec("uci commit network; uci commit dhcp; uci commit firewall")
-    log_api("subnet_network", "apply step3: uci commit done (network+dhcp+firewall)")
-    -- 6. reload 放后台执行 (同步执行会断掉自己的网络连接导致 CGI 超时)
-    shell_exec("(/etc/init.d/network reload; /etc/init.d/dnsmasq restart; /etc/init.d/firewall restart) >/tmp/subnet-reload.log 2>&1 &")
-    log_api("subnet_network", "apply reload 后台执行中 (同步会断网导致超时)")
-    return true
-end
--- 删除子网网络配置: 删接口/DHCP, 网口还给 br-lan
--- subnet 参数: {interface=}
-function revert_subnet_network(subnet)
-    local iface = subnet.interface or ""
-    if iface == "" then
-        log_api("subnet_network", "revert FAIL: interface 为空")
-        return false
-    end
-    local ifname_short = iface:gsub("eth", "lan")
-    log_api("subnet_network", "revert: iface=" .. iface .. " uci_section=" .. ifname_short)
-    -- 备份
-    shell_exec("uci show network > /tmp/network.bak.$(date +%s) 2>/dev/null")
-    -- 1. 删接口 + DHCP
-    shell_exec("uci delete network." .. ifname_short .. " 2>/dev/null")
-    shell_exec("uci delete dhcp." .. ifname_short .. " 2>/dev/null")
-    log_api("subnet_network", "revert step1: 删除接口 " .. ifname_short .. " + DHCP")
-    -- 2. 从 lan zone 移除
-    shell_exec("uci del_list firewall.@zone[0].network='" .. ifname_short .. "' 2>/dev/null")
-    -- 3. 网口还给 br-lan (只 trim 首尾空格, 不能删中间空格)
-    local lan_ifname = shell_exec("uci get network.lan.ifname 2>/dev/null"):gsub("^%s+", ""):gsub("%s+$", "")
-    -- 检查 iface 是否已在 lan.ifname 里 (按 token 精确匹配)
-    local already_in = false
-    for part in lan_ifname:gmatch("%S+") do
-        if part == iface then already_in = true; break end
-    end
-    if not already_in then
-        local new_ifname = lan_ifname .. " " .. iface
-        shell_exec("uci set network.lan.ifname='" .. new_ifname:gsub("^%s+", "") .. "'")
-        log_api("subnet_network", "revert step2: br-lan ifname 旧='" .. lan_ifname .. "' 新='" .. new_ifname:gsub("^%s+", "") .. "'")
-    else
-        log_api("subnet_network", "revert step2: " .. iface .. " 已在 br-lan, 跳过")
-    end
-    -- 4. commit + reload
-    shell_exec("uci commit network; uci commit dhcp; uci commit firewall")
-    log_api("subnet_network", "revert step3: uci commit done")
-    -- reload 放后台执行 (同步执行会断掉自己的网络连接导致 CGI 超时)
-    shell_exec("(/etc/init.d/network reload; /etc/init.d/dnsmasq restart; /etc/init.d/firewall restart) >/tmp/subnet-reload.log 2>&1 &")
-    log_api("subnet_network", "revert reload 后台执行中")
-    return true
-end
 -- 重新生成 sing-box 配置并重启
 function apply_config()
     log_api("apply_config", "START")
@@ -519,13 +415,9 @@ function index()
     entry({"admin", "services", "tiktokproxy", "chains_apply"}, call("action_chains_apply"))
     entry({"admin", "services", "tiktokproxy", "chains_activate"}, call("action_chains_activate"))
     entry({"admin", "services", "tiktokproxy", "chains_disable"}, call("action_chains_disable"))
-    -- 子网 (设备) 管理 API
+    -- 子网 (设备) 管理 API (网络层增删改已挪到 SSH 脚本, 网页只读 + 换绑链路)
     entry({"admin", "services", "tiktokproxy", "subnets_list"}, call("action_subnets_list"))
     entry({"admin", "services", "tiktokproxy", "network_topology"}, call("action_network_topology"))
-    entry({"admin", "services", "tiktokproxy", "subnets_get"}, call("action_subnets_get"))
-    entry({"admin", "services", "tiktokproxy", "subnets_add"}, call("action_subnets_add"))
-    entry({"admin", "services", "tiktokproxy", "subnets_update"}, call("action_subnets_update"))
-    entry({"admin", "services", "tiktokproxy", "subnets_delete"}, call("action_subnets_delete"))
     entry({"admin", "services", "tiktokproxy", "subnets_bind"}, call("action_subnets_bind"))
     entry({"admin", "services", "tiktokproxy", "subnets_unbind"}, call("action_subnets_unbind"))
     entry({"admin", "services", "tiktokproxy", "interfaces_list"}, call("action_interfaces_list"))
@@ -1310,148 +1202,12 @@ function action_subnets_list()
     luci.http.prepare_content("application/json")
     luci.http.write_json({subnets = data})
 end
-function action_subnets_get()
-    local id = luci.http.formvalue("id") or ""
-    log_api("subnets_get", "id=" .. id)
-    if not id:match("^%d+$") then
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({error = "invalid id"})
-        return
-    end
-    local output = db_cmd("get-subnet " .. id)
-    local data = parse_json(output) or {}
-    luci.http.prepare_content("application/json")
-    luci.http.write_json(data)
-end
 function action_interfaces_list()
     log_api("interfaces_list", "")
     local json_str = get_available_interfaces()
     local data = parse_json(json_str) or {}
     luci.http.prepare_content("application/json")
     luci.http.write_json({interfaces = data})
-end
-function action_subnets_add()
-    local name = luci.http.formvalue("name") or ""
-    local interface = luci.http.formvalue("interface") or ""
-    local cidr = luci.http.formvalue("cidr") or ""
-    local gateway = luci.http.formvalue("gateway") or ""
-    local ap_ip = luci.http.formvalue("ap_ip") or ""
-    local ap_mac = luci.http.formvalue("ap_mac") or ""
-    local wifi_ssid = luci.http.formvalue("wifi_ssid") or ""
-    local chain_id = luci.http.formvalue("chain_id") or ""
-    log_api("subnets_add", "name=" .. name .. " interface=" .. interface .. " cidr=" .. cidr .. " chain_id=" .. chain_id)
-    if name == "" or interface == "" then
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({error = "name and interface are required"})
-        return
-    end
-    -- cidr 留空自动分配
-    if cidr == "" then
-        cidr = auto_allocate_cidr()
-        log_api("subnets_add", "auto cidr=" .. cidr)
-    end
-    -- 组装 JSON
-    local parts = {}
-    parts[#parts+1] = '"name":"' .. name:gsub('"', '\\"') .. '"'
-    parts[#parts+1] = '"interface":"' .. interface .. '"'
-    parts[#parts+1] = '"cidr":"' .. cidr .. '"'
-    parts[#parts+1] = '"gateway":"' .. gateway .. '"'
-    parts[#parts+1] = '"ap_ip":"' .. ap_ip .. '"'
-    parts[#parts+1] = '"ap_mac":"' .. ap_mac .. '"'
-    parts[#parts+1] = '"wifi_ssid":"' .. wifi_ssid .. '"'
-    if chain_id ~= "" then
-        parts[#parts+1] = '"chain_id":' .. chain_id
-    end
-    local json = "{" .. table.concat(parts, ",") .. "}"
-    local output = db_cmd("add-subnet '" .. json:gsub("'", "'\\''") .. "'")
-    local data = parse_json(output) or {error = "failed"}
-    if not data.id then
-        log_api("subnets_add", "FAIL db: " .. (output or ""))
-        luci.http.prepare_content("application/json")
-        luci.http.write_json(data)
-        return
-    end
-    -- 配置网络 (拆 br-lan)
-    local subnet = {interface = interface, cidr = cidr, gateway = gateway, name = name}
-    local net_ok = apply_subnet_network(subnet)
-    log_api("subnets_add", "apply_subnet_network=" .. tostring(net_ok))
-    if not net_ok then
-        -- 网络配置失败, 回滚 DB 记录
-        db_cmd("delete-subnet " .. data.id)
-        log_api("subnets_add", "回滚 DB 记录 id=" .. data.id .. " (网络配置失败)")
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({error = "网络配置失败, 子网未创建"})
-        return
-    end
-    luci.http.prepare_content("application/json")
-    luci.http.write_json(data)
-end
-function action_subnets_update()
-    local id = luci.http.formvalue("id") or ""
-    if not id:match("^%d+$") then
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({error = "invalid id"})
-        return
-    end
-    local name = luci.http.formvalue("name") or ""
-    log_api("subnets_update", "id=" .. id .. " name=" .. name)
-    local parts = {}
-    for _, key in ipairs({"name", "cidr", "gateway", "ap_ip", "ap_mac", "wifi_ssid"}) do
-        local val = luci.http.formvalue(key)
-        if val and #val > 0 then
-            parts[#parts+1] = '"' .. key .. '":"' .. val:gsub('"', '\\"') .. '"'
-        end
-    end
-    local enabled = luci.http.formvalue("enabled")
-    if enabled and enabled ~= "" then
-        parts[#parts+1] = '"enabled":' .. enabled
-    end
-    -- chain_id: 空字符串 -> 解绑 (NULL), 数字 -> 绑定; nil 表示表单未提交该字段
-    local chain_id_raw = luci.http.formvalue("chain_id")
-    if chain_id_raw ~= nil then
-        if chain_id_raw ~= "" then
-            parts[#parts+1] = '"chain_id":' .. chain_id_raw
-        else
-            parts[#parts+1] = '"chain_id":null'
-        end
-    end
-    if #parts == 0 then
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({status = "ok", id = id, note = "no changes"})
-        return
-    end
-    local json = "{" .. table.concat(parts, ",") .. "}"
-    local output = db_cmd("update-subnet " .. id .. " '" .. json:gsub("'", "'\\''") .. "'")
-    local data = parse_json(output) or {error = "failed"}
-    luci.http.prepare_content("application/json")
-    luci.http.write_json(data)
-end
-function action_subnets_delete()
-    local id = luci.http.formvalue("id") or ""
-    if not id:match("^%d+$") then
-        luci.http.prepare_content("application/json")
-        luci.http.write_json({error = "invalid id"})
-        return
-    end
-    log_api("subnets_delete", "id=" .. id)
-    -- 先读子网信息 (用于 revert)
-    local subnet = parse_json(db_cmd("get-subnet " .. id)) or {}
-    -- 先回滚网络配置 (网口还 br-lan), 成功后再删 db
-    local net_ok = true
-    if subnet.interface then
-        net_ok = revert_subnet_network(subnet)
-        log_api("subnets_delete", "revert_subnet_network=" .. tostring(net_ok))
-    end
-    -- 回滚成功才删 db, 防止 revert 失败时网口悬空
-    local output
-    if net_ok then
-        output = db_cmd("delete-subnet " .. id)
-    else
-        output = [[{"status":"error","message":"revert 网络失败, 子网记录保留以便重试"}]]
-    end
-    local data = parse_json(output) or {error = "failed"}
-    luci.http.prepare_content("application/json")
-    luci.http.write_json(data)
 end
 function action_subnets_bind()
     local id = luci.http.formvalue("id") or ""
