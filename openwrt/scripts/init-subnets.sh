@@ -1,6 +1,6 @@
 #!/bin/sh
 # ================================================================
-#  init-subnets.sh - 子网初始化脚本 (灾难级, 谨慎执行)
+#  init-subnets.sh - 子网批量初始化脚本 (灾难级, 谨慎执行)
 #
 #  功能: 发现所有物理 LAN 口, 逐个拆出独立子网, 一次性 commit + reload
 #
@@ -10,32 +10,21 @@
 #    init-subnets.sh                    # 全量执行, 拆出所有 LAN 口
 #    init-subnets.sh --rollback         # 回滚: 删除所有子网, 网口还回 br-lan
 #
-#  安全:
-#    - 执行前自动备份 UCI 配置
-#    - dry-run 模式不修改任何配置
-#    - 先写完所有 UCI 配置, 最后统一 commit + reload
-#    - dropbear 监听 0.0.0.0:22, 任意子网网关可 SSH
-#
-#  依赖: uci, jq, vps-db.sh
+#  依赖: _subnet-lib.sh, uci, jq, vps-db.sh
 # ================================================================
 
 set -uo pipefail
 
-DB_FILE="/etc/sing-box/vps.db"
-BACKUP_FILE="/tmp/network.bak.$(date +%Y%m%d_%H%M%S)"
-
-# 颜色
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-ok()    { echo -e "${GREEN}✓ $1${NC}"; }
-warn()  { echo -e "${YELLOW}⚠ $1${NC}"; }
-err()   { echo -e "${RED}✗ $1${NC}"; }
-info()  { echo -e "${CYAN}→ $1${NC}"; }
-log()   { echo "[$(date '+%H:%M:%S')] $1"; }
+SUBNET_LIB="/usr/bin/_subnet-lib.sh"
+# 本地开发时回退到仓库路径
+if [ ! -f "$SUBNET_LIB" ]; then
+    SUBNET_LIB="$(dirname "$0")/_subnet-lib.sh"
+fi
+if [ ! -f "$SUBNET_LIB" ]; then
+    echo "ERROR: _subnet-lib.sh not found (looked at /usr/bin/ and $(dirname "$0")/)" >&2
+    exit 1
+fi
+. "$SUBNET_LIB"
 
 # ---------------------------------------------------------------
 # 参数解析
@@ -52,76 +41,13 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# ---------------------------------------------------------------
-# 辅助函数
-# ---------------------------------------------------------------
-
-# 发现所有物理网口 (用 /sys/class/net/*/device 目录判断)
-discover_phys_ifaces() {
-    local ifaces=""
-    for iface in $(ls /sys/class/net/ 2>/dev/null); do
-        if [ -d "/sys/class/net/$iface/device" ]; then
-            ifaces="$ifaces $iface"
-        fi
-    done
-    echo "$ifaces" | tr ' ' '\n' | grep -v '^$' | tr '\n' ' ' | sed 's/^ //'
-}
-
-# 识别 WAN 口 (遍历 UCI network, 匹配 wan 相关的 ifname/device)
-get_wan_iface() {
-    local wan_ifname=""
-    # 遍历所有 UCI interface section
-    for section in $(uci show network 2>/dev/null | grep '=interface' | cut -d. -f2 | cut -d= -f1); do
-        # section 名包含 wan
-        if echo "$section" | grep -qi "wan"; then
-            local ifname=$(uci get "network.$section.ifname" 2>/dev/null || uci get "network.$section.device" 2>/dev/null)
-            if [ -n "$ifname" ]; then
-                wan_ifname="$ifname"
-                break
-            fi
-        fi
-    done
-    echo "$wan_ifname"
-}
-
-# 获取当前 br-lan 成员
-get_brlan_members() {
-    local ifname=$(uci get network.lan.ifname 2>/dev/null)
-    echo "$ifname"
-}
-
-# CIDR 自动分配 (从 192.168.5 起递增, 跳过已占用)
-# 参数: 已占用的第三段列表 (空格分隔)
-allocate_cidr() {
-    local used="$1"
-    for i in $(seq 5 254); do
-        local occupied=false
-        for u in $used; do
-            if [ "$u" = "$i" ]; then occupied=true; break; fi
-        done
-        if [ "$occupied" = "false" ]; then
-            echo "192.168.$i.0/24"
-            return
-        fi
-    done
-    echo ""
-}
-
-# UCI 接口名 (eth0 -> lan0, eth2 -> lan2)
-uci_iface_name() {
-    echo "$1" | sed 's/eth/lan/'
-}
-
-# dry-run 模式下的模拟执行 (只打印命令)
+# dry-run 模式下的模拟执行
 DRY_RUN=false
 exec_cmd() {
     if [ "$DRY_RUN" = "true" ]; then
         echo -e "  ${CYAN}[dry-run]${NC} $1"
     else
-        eval "$1"
-        if [ $? -ne 0 ]; then
-            warn "命令失败: $1"
-        fi
+        eval "$1" || warn "命令失败: $1"
     fi
 }
 
@@ -166,66 +92,58 @@ elif [ "$MODE" = "rollback" ]; then
     echo -e "${YELLOW}=== rollback 模式: 删除所有子网, 网口还回 br-lan ===${NC}"
     echo ""
 
-    # 备份
-    info "备份 UCI 配置到 $BACKUP_FILE"
-    exec_cmd "uci show network > $BACKUP_FILE"
+    info "备份 UCI 配置"
+    BAK=$(backup_uci)
+    echo "  备份: $BAK"
 
-    # 读取所有子网
-    SUBNETS=$(vps-db.sh list-subnets 2>/dev/null)
+    SUBNETS=$(list_subnets_from_db)
     SUBNET_COUNT=$(echo "$SUBNETS" | jq 'length' 2>/dev/null)
 
     if [ "$SUBNET_COUNT" = "0" ] || [ -z "$SUBNET_COUNT" ]; then
         ok "无子网需要回滚"
+        print_luci_urls
         exit 0
     fi
 
     info "发现 $SUBNET_COUNT 个子网, 开始回滚..."
 
-    # 逐个删除子网 (网口还回 br-lan)
     echo "$SUBNETS" | jq -c '.[]' 2>/dev/null | while read -r subnet_json; do
-        SUB_ID=$(echo "$subnet_json" | jq -r '.id')
         SUB_IFACE=$(echo "$subnet_json" | jq -r '.interface')
+        SUB_ID=$(echo "$subnet_json" | jq -r '.id')
         UCI_NAME=$(uci_iface_name "$SUB_IFACE")
 
         log "回滚子网 #$SUB_ID ($SUB_IFACE -> $UCI_NAME)"
 
-        # 删 UCI 接口
-        exec_cmd "uci delete network.$UCI_NAME"
-        exec_cmd "uci delete dhcp.$UCI_NAME"
-        exec_cmd "uci del_list firewall.@zone[0].network='$UCI_NAME'"
-
-        # 网口还回 br-lan
-        CURRENT_LAN_IFNAME=$(uci get network.lan.ifname 2>/dev/null)
-        # 检查是否已在
-        ALREADY_IN=false
-        for part in $CURRENT_LAN_IFNAME; do
-            if [ "$part" = "$SUB_IFACE" ]; then ALREADY_IN=true; break; fi
-        done
-        if [ "$ALREADY_IN" = "false" ]; then
-            NEW_IFNAME="$CURRENT_LAN_IFNAME $SUB_IFACE"
-            NEW_IFNAME=$(echo "$NEW_IFNAME" | sed 's/^ //')
-            exec_cmd "uci set network.lan.ifname='$NEW_IFNAME'"
-        fi
-
-        # 删 vps.db 记录
-        exec_cmd "vps-db.sh delete-subnet $SUB_ID"
+        exec_cmd "remove_uci_interface '$UCI_NAME'"
+        exec_cmd "return_to_brlan '$SUB_IFACE'"
+        exec_cmd "delete_subnet_from_db '$SUB_ID'"
     done
 
-    # commit + reload
-    info "commit + reload..."
-    exec_cmd "uci commit network; uci commit dhcp; uci commit firewall"
-    exec_cmd "(/etc/init.d/network reload; /etc/init.d/dnsmasq restart; /etc/init.d/firewall restart) >/tmp/subnet-rollback.log 2>&1 &"
+    if [ "$DRY_RUN" = "false" ]; then
+        info "commit + reload..."
+        commit_and_reload
+        info "等待网络重载 (15秒)..."
+        sleep 15
+    fi
 
-    ok "回滚完成, 网络正在重载..."
+    ok "回滚完成"
+    print_luci_urls
     exit 0
 fi
 
 # --- dry-run 或 实际执行 (test/full 模式) ---
 
-# 确定要处理的 LAN 口
 if [ "$MODE" = "test" ]; then
     if [ -z "$TEST_IFACE" ]; then
         err "--test 需要指定网口, 如: init-subnets.sh --test eth0"
+        exit 1
+    fi
+    if ! is_phys_iface "$TEST_IFACE"; then
+        err "$TEST_IFACE 不是物理网口"
+        exit 1
+    fi
+    if is_wan_iface "$TEST_IFACE"; then
+        err "$TEST_IFACE 是 WAN 口, 不能拆"
         exit 1
     fi
     TARGET_IFACES="$TEST_IFACE"
@@ -237,15 +155,15 @@ else
     echo ""
 fi
 
-# --- 步骤 2: 备份 UCI 配置 ---
+# --- 步骤 2: 备份 ---
 if [ "$DRY_RUN" = "false" ]; then
-    info "步骤 2: 备份 UCI 配置到 $BACKUP_FILE"
-    uci show network > "$BACKUP_FILE" 2>/dev/null
-    ok "备份完成: $BACKUP_FILE"
+    info "步骤 2: 备份 UCI 配置"
+    BAK=$(backup_uci)
+    ok "备份完成: $BAK"
     echo ""
 else
     info "步骤 2: 备份 UCI 配置"
-    echo -e "  ${CYAN}[dry-run]${NC} uci show network > $BACKUP_FILE"
+    echo -e "  ${CYAN}[dry-run]${NC} backup_uci"
     echo ""
 fi
 
@@ -253,7 +171,6 @@ fi
 info "步骤 3: 收集已占用 CIDR"
 USED_CIDRS=""
 
-# br-lan 网段
 BRLAN_IP=$(uci get network.lan.ipaddr 2>/dev/null)
 if [ -n "$BRLAN_IP" ]; then
     BRLAN_THIRD=$(echo "$BRLAN_IP" | cut -d. -f3)
@@ -261,16 +178,13 @@ if [ -n "$BRLAN_IP" ]; then
     echo "  br-lan 网段: 192.168.$BRLAN_THIRD.0/24"
 fi
 
-# 已有子网
-EXISTING_SUBNETS=$(vps-db.sh list-subnets 2>/dev/null)
+EXISTING_SUBNETS=$(list_subnets_from_db)
 if [ -n "$EXISTING_SUBNETS" ] && [ "$EXISTING_SUBNETS" != "[]" ]; then
     echo "$EXISTING_SUBNETS" | jq -c '.[]' 2>/dev/null | while read -r sub; do
         CIDR=$(echo "$sub" | jq -r '.cidr')
         IFACE=$(echo "$sub" | jq -r '.interface')
-        THIRD=$(echo "$CIDR" | grep -oE '192\.168\.[0-9]+' | cut -d. -f3)
         echo "  已有子网: $CIDR ($IFACE)"
     done
-    # 收集到 USED_CIDRS (需要子 shell)
     USED_CIDRS="$USED_CIDRS $(echo "$EXISTING_SUBNETS" | jq -r '.[].cidr' | grep -oE '192\.168\.[0-9]+' | cut -d. -f3 | tr '\n' ' ')"
 fi
 echo "  已占用网段: $USED_CIDRS"
@@ -279,23 +193,33 @@ echo ""
 # --- 步骤 4: 逐口写 UCI 配置 ---
 info "步骤 4: 逐口写 UCI 配置 (不 commit)"
 
-# 跟踪 br-lan ifname 的变化
-CURRENT_BRLAN_IFNAME="$BRLAN_MEMBERS"
 ALLOCATED_COUNT=0
 
 for iface in $TARGET_IFACES; do
     echo ""
     log "处理 $iface:"
 
-    # 检查是否已有子网
+    # 校验: 物理网口
+    if ! is_phys_iface "$iface"; then
+        err "$iface 不是物理网口, 跳过"
+        continue
+    fi
+    # 校验: 不是 WAN
+    if is_wan_iface "$iface"; then
+        warn "$iface 是 WAN 口, 跳过"
+        continue
+    fi
+    # 校验: 当前在 br-lan (不在说明已被拆出)
+    if ! is_in_brlan "$iface"; then
+        warn "$iface 不在 br-lan (可能已拆出), 跳过"
+        continue
+    fi
+    # 校验: 还没有子网
     HAS_SUBNET=false
     if [ -n "$EXISTING_SUBNETS" ] && [ "$EXISTING_SUBNETS" != "[]" ]; then
         HAS=$(echo "$EXISTING_SUBNETS" | jq -r --arg iface "$iface" '[.[] | select(.interface == $iface)] | length')
-        if [ "$HAS" -gt 0 ]; then
-            HAS_SUBNET=true
-        fi
+        if [ "$HAS" -gt 0 ]; then HAS_SUBNET=true; fi
     fi
-
     if [ "$HAS_SUBNET" = "true" ]; then
         warn "$iface 已有子网, 跳过"
         continue
@@ -317,49 +241,30 @@ for iface in $TARGET_IFACES; do
     echo "  网关: $GATEWAY"
     echo "  UCI 接口: $UCI_NAME"
 
-    # 从 br-lan 移除
-    NEW_BRLAN_IFNAME=""
-    for part in $CURRENT_BRLAN_IFNAME; do
-        if [ "$part" != "$iface" ]; then
-            if [ -z "$NEW_BRLAN_IFNAME" ]; then
-                NEW_BRLAN_IFNAME="$part"
-            else
-                NEW_BRLAN_IFNAME="$NEW_BRLAN_IFNAME $part"
-            fi
+    # 从 br-lan 移除 (安全红线在 safe_remove_from_brlan 内)
+    if [ "$DRY_RUN" = "true" ]; then
+        remaining=$(count_brlan_remaining "$iface")
+        if [ "$remaining" = "0" ]; then
+            warn "[dry-run] $iface 是 br-lan 最后一个成员, 真实执行将被拒绝"
+        else
+            exec_cmd "safe_remove_from_brlan '$iface'"
         fi
-    done
-    CURRENT_BRLAN_IFNAME="$NEW_BRLAN_IFNAME"
-
-    echo "  br-lan 移除 $iface 后: '$CURRENT_BRLAN_IFNAME'"
-
-    exec_cmd "uci set network.lan.ifname='$CURRENT_BRLAN_IFNAME'"
+    else
+        if ! safe_remove_from_brlan "$iface"; then
+            err "无法从 br-lan 移除 $iface, 跳过该口"
+            continue
+        fi
+    fi
 
     # 建 UCI 接口
-    exec_cmd "uci set network.$UCI_NAME=interface"
-    exec_cmd "uci set network.$UCI_NAME.proto='static'"
-    exec_cmd "uci set network.$UCI_NAME.ifname='$iface'"
-    exec_cmd "uci set network.$UCI_NAME.ipaddr='$GATEWAY'"
-    exec_cmd "uci set network.$UCI_NAME.netmask='255.255.255.0'"
+    exec_cmd "create_uci_interface '$iface' '$UCI_NAME' '$GATEWAY'"
 
-    # DHCP 池
-    exec_cmd "uci set dhcp.$UCI_NAME=dhcp"
-    exec_cmd "uci set dhcp.$UCI_NAME.interface='$UCI_NAME'"
-    exec_cmd "uci set dhcp.$UCI_NAME.start='100'"
-    exec_cmd "uci set dhcp.$UCI_NAME.limit='50'"
-    exec_cmd "uci set dhcp.$UCI_NAME.leasetime='12h'"
-
-    # 防火墙
-    exec_cmd "uci add_list firewall.@zone[0].network='$UCI_NAME'"
-
-    # vps.db
+    # 写入 vps.db
     SUBNET_JSON="{\"name\":\"LAN-$iface\",\"interface\":\"$iface\",\"cidr\":\"$CIDR\",\"gateway\":\"$GATEWAY\"}"
-    exec_cmd "vps-db.sh add-subnet '$SUBNET_JSON'"
+    exec_cmd "add_subnet_to_db '$SUBNET_JSON'"
 
     # 检查 br-lan 是否还有成员
-    REMAINING=0
-    for part in $CURRENT_BRLAN_IFNAME; do
-        REMAINING=$((REMAINING + 1))
-    done
+    REMAINING=$(count_brlan_remaining "$iface")
     if [ "$REMAINING" = "0" ]; then
         warn "br-lan 将无物理成员! br-lan IP 不可达, 但 SSH 通过子网网关仍可达"
     fi
@@ -382,13 +287,13 @@ if [ "$DRY_RUN" = "true" ]; then
 fi
 
 if [ "$ALLOCATED_COUNT" = "0" ]; then
-    ok "无需操作 (所有口已有子网)"
+    ok "无需操作 (所有口已有子网或无可用口)"
+    print_luci_urls
     exit 0
 fi
 
 info "步骤 5: commit + reload"
-exec_cmd "uci commit network; uci commit dhcp; uci commit firewall"
-exec_cmd "(/etc/init.d/network reload; /etc/init.d/dnsmasq restart; /etc/init.d/firewall restart) >/tmp/subnet-init.log 2>&1 &"
+commit_and_reload
 
 echo ""
 info "等待网络重载 (15秒)..."
@@ -406,13 +311,13 @@ brctl show br-lan 2>/dev/null
 
 echo ""
 echo "=== 子网列表 ==="
-vps-db.sh list-subnets 2>/dev/null | jq '.[] | {id, name, interface, cidr}' 2>/dev/null
+list_subnets_from_db | jq '.[] | {id, name, interface, cidr}' 2>/dev/null
 
 echo ""
 echo "=== SSH 监听 ==="
 netstat -lnp 2>/dev/null | grep ":22 "
 
-echo ""
 ok "初始化完成!"
+print_luci_urls
 echo ""
 echo "如需回滚: init-subnets.sh --rollback"
