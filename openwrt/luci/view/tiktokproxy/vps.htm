@@ -359,7 +359,8 @@ function loadChains() {
         // 分流策略下拉
         var currentPolicy = c.policy_name || 'default';
         var policyOptions = '<option value="default"' + (currentPolicy == 'default' ? ' selected' : '') + '>默认 (default)</option>';
-        policyOptions += policiesCache.filter(function(p){ return p.name != 'default'; }).map(function(p) {
+        policyOptions += '<option value="none"' + (currentPolicy == 'none' ? ' selected' : '') + '>不分流 (全走链路)</option>';
+        policyOptions += policiesCache.filter(function(p){ return p.name != 'default' && p.name != 'none'; }).map(function(p) {
           var sel = (p.name == currentPolicy) ? ' selected' : '';
           var label = p.name === p.display_name ? p.name : (p.name + ' (' + p.display_name + ')');
           return '<option value="' + esc(p.name) + '"' + sel + '>' + esc(label) + '</option>';
@@ -443,7 +444,8 @@ function showAddChain() {
 function fillPolicySelect(selectedName) {
   var sel = document.getElementById('c_policy_name');
   var html = '<option value="">默认 (default)</option>';
-  policiesCache.filter(function(p){ return p.name != 'default'; }).forEach(function(p) {
+  html += '<option value="none"' + (selectedName == 'none' ? ' selected' : '') + '>不分流 (全走链路)</option>';
+  policiesCache.filter(function(p){ return p.name != 'default' && p.name != 'none'; }).forEach(function(p) {
     var isSel = (p.name == selectedName) ? ' selected' : '';
     html += '<option value="' + esc(p.name) + '"' + isSel + '>' + esc(p.name) + (p.display_name && p.display_name != p.name ? ' (' + esc(p.display_name) + ')' : '') + '</option>';
   });
@@ -642,7 +644,8 @@ function delChain(id) {
 }
 
 function bindPolicy(chainId, policyName) {
-  if (!confirm('切换分流策略为 ' + policyName + '?\n将重新生成配置并重启 sing-box')) return;
+  var label = policyName === 'none' ? '不分流 (全走链路)' : (policyName === 'default' ? '默认 (default)' : policyName);
+  if (!confirm('切换分流策略为 ' + label + '?\n将重新生成配置并重启 sing-box')) return;
   showMsg('正在应用策略...', 'info');
   xhrPost(CH_BIND_POLICY_URL, 'chain_id=' + chainId + '&policy_name=' + encodeURIComponent(policyName), function(x, rv) {
     if (rv && rv.status == 'ok') { showMsg('策略已切换', 'success'); loadChains(); }

@@ -1913,6 +1913,11 @@ function action_policies_delete()
         luci.http.write_json({error = "默认策略不可删除"})
         return
     end
+    if name == "none" then
+        luci.http.prepare_content("application/json")
+        luci.http.write_json({error = "内置空策略不可删除"})
+        return
+    end
     if not name:match("^[a-z0-9-]+$") then
         luci.http.prepare_content("application/json")
         luci.http.write_json({error = "invalid name"})
@@ -1979,6 +1984,19 @@ function action_chains_bind_policy()
         luci.http.prepare_content("application/json")
         luci.http.write_json({error = "invalid policy_name"})
         return
+    end
+    -- "none" 是内置空策略: 无 geosite/geoip/direct/proxy 域名, 所有流量走链路 VLESS
+    -- 绑 none 时自动创建空策略文件 (如果不存在)
+    if policy_name == "none" then
+        local none_file = POLICIES_DIR .. "/none.json"
+        if not nixio.fs.access(none_file) then
+            os.execute("mkdir -p " .. POLICIES_DIR)
+            local f = io.open(none_file, "w")
+            if f then
+                f:write('{"name":"不分流 (全走链路)","notes":"内置空策略, 无直连规则, 所有流量走链路 VLESS","rule_sets":[],"direct_domain_suffix":[],"proxy_domain_suffix":[]}')
+                f:close()
+            end
+        end
     end
     -- 校验策略文件存在
     local file_path = POLICIES_DIR .. "/" .. policy_name .. ".json"

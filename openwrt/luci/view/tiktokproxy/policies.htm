@@ -161,7 +161,10 @@ function showAddPolicy() {
 }
 
 function editPolicy(name) {
-  XHR.get(POLICIES_GET_URL + '?name=' + encodeURIComponent(name), null, function(x, rv) {
+  // 注意: LuCI XHR.get(url, data, cb) 的 data=null 时会追加 ?_=随机数,
+  // 若 url 已含 ?name=xxx 会变成双 ? 破坏 query string。
+  // 所以 name 必须作为 data 对象传入, 不能拼在 URL 里。
+  XHR.get(POLICIES_GET_URL, { name: name }, function(x, rv) {
     if (!rv || rv.error) { showMsg('获取失败: ' + (rv && rv.error ? rv.error : ''), 'error'); return; }
     document.getElementById('policy_form_title').textContent = '编辑: ' + name;
     document.getElementById('p_edit_name').value = name;
