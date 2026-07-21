@@ -1,0 +1,323 @@
+<%+header%>
+<h2 name="content">分流策略</h2>
+
+<div class="chb-card">
+  <div class="chb-card-body">
+    <div class="chb-card-actions">
+      <button type="button" class="chb-btn chb-btn-primary" onclick="showAddPolicy()">+ 新建策略</button>
+      <button type="button" class="chb-btn chb-btn-ghost" onclick="loadPolicies()">刷新</button>
+    </div>
+    <div id="policies_list_area" class="chb-empty">加载中...</div>
+  </div>
+</div>
+
+<!-- ===== 策略编辑表单 ===== -->
+<div class="chb-card" id="policy_form" style="display:none;">
+  <div class="chb-card-header">
+    <h3 class="chb-card-title" id="policy_form_title">新建策略</h3>
+  </div>
+  <div class="chb-card-body">
+    <input type="hidden" id="p_edit_name">
+    <input type="hidden" id="p_is_default" value="0">
+    <div class="chb-form-grid">
+      <div class="chb-field">
+        <label class="chb-label">文件名 (英文) <span class="chb-required">*</span></label>
+        <input type="text" class="chb-input" id="p_name" placeholder="tiktok-priority">
+        <div class="chb-stat-desc" style="font-size:11px;">小写字母/数字/连字符, 1-32 字符, 新建后不可改</div>
+      </div>
+      <div class="chb-field">
+        <label class="chb-label">显示名</label>
+        <input type="text" class="chb-input" id="p_display_name" placeholder="TikTok 优先">
+      </div>
+    </div>
+    <div class="chb-field" style="margin-top:8px;">
+      <label class="chb-label">备注</label>
+      <input type="text" class="chb-input" id="p_notes" placeholder="策略说明">
+    </div>
+
+    <div class="chb-separator-text">
+      <button type="button" class="chb-btn chb-btn-sm" id="tab_form_btn" onclick="switchTab('form')">表单模式</button>
+      <button type="button" class="chb-btn chb-btn-sm" id="tab_json_btn" onclick="switchTab('json')">原始 JSON</button>
+    </div>
+
+    <!-- 表单模式 -->
+    <div id="tab_form">
+      <div class="chb-field" style="margin-top:8px;">
+        <label class="chb-label">Rule Sets (远程规则集)</label>
+        <div id="rule_sets_area">
+          <label><input type="checkbox" id="rs_geosite_cn" value="geosite-cn"> geosite-cn (国内域名直连)</label><br>
+          <label><input type="checkbox" id="rs_geoip_cn" value="geoip-cn"> geoip-cn (国内 IP 直连)</label>
+        </div>
+      </div>
+      <div class="chb-field" style="margin-top:8px;">
+        <label class="chb-label">Direct 域名后缀 (一行一个, 走直连)</label>
+        <textarea class="chb-input" id="p_direct" rows="6" style="width:100%;font-family:monospace;" placeholder="baidu.com&#10;qq.com"></textarea>
+      </div>
+      <div class="chb-field" style="margin-top:8px;">
+        <label class="chb-label">Proxy 域名后缀 (一行一个, 强制走链路)</label>
+        <textarea class="chb-input" id="p_proxy" rows="6" style="width:100%;font-family:monospace;" placeholder="google.com&#10;tiktok.com"></textarea>
+      </div>
+    </div>
+
+    <!-- JSON 模式 -->
+    <div id="tab_json" style="display:none;margin-top:8px;">
+      <textarea class="chb-input" id="p_json" rows="20" style="width:100%;font-family:monospace;font-size:12px;" placeholder='{"name":"...","notes":"...","rule_sets":[...],"direct_domain_suffix":[...],"proxy_domain_suffix":[...]}'></textarea>
+    </div>
+
+    <div class="chb-btn-group" style="margin-top:12px;">
+      <button type="button" class="chb-btn chb-btn-primary" onclick="savePolicy()">保存</button>
+      <button type="button" class="chb-btn" onclick="cancelPolicy()">取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="result_msg" class="chb-msg" style="display:none;"></div>
+
+<script type="text/javascript">
+var POLICIES_LIST_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","policies_list")%>';
+var POLICIES_GET_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","policies_get")%>';
+var POLICIES_SAVE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","policies_save")%>';
+var POLICIES_DEL_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","policies_delete")%>';
+var POLICIES_CLONE_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","policies_clone")%>';
+
+var currentTab = 'form';
+
+function xhrPost(url, data, callback) {
+  var xhr = new XHR();
+  xhr.post(url, data, function(x) {
+    var json = null;
+    if (x.getResponseHeader('Content-Type') == 'application/json') {
+      try { json = JSON.parse(x.responseText); } catch(e) { json = null; }
+    }
+    callback(x, json);
+  });
+}
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+function showMsg(m, t) {
+  var d = document.getElementById('result_msg');
+  d.style.display = 'block';
+  d.innerHTML = m;
+  d.className = 'chb-msg ' + (t == 'success' ? 'chb-msg-success' : t == 'error' ? 'chb-msg-error' : 'chb-msg-info');
+}
+
+// ===== 策略列表 =====
+function loadPolicies() {
+  var area = document.getElementById('policies_list_area');
+  area.innerHTML = '<div class="chb-empty">加载中...</div>';
+  XHR.get(POLICIES_LIST_URL, null, function(x, rv) {
+    if (!rv || !rv.policies) {
+      area.innerHTML = '<div class="chb-empty">加载失败</div>';
+      return;
+    }
+    if (!rv.policies.length) {
+      area.innerHTML = '<div class="chb-empty">无策略, 点击「+ 新建策略」创建 (default 策略会在首次生成配置时自动创建)</div>';
+      return;
+    }
+    var html = '';
+    rv.policies.forEach(function(p) {
+      html += '<div class="chb-card" style="margin-bottom:8px;">';
+      html += '<div class="chb-card-body" style="padding:12px;">';
+      html += '<div style="display:flex;justify-content:space-between;align-items:center;">';
+      html += '<div><b>&#128196; ' + esc(p.name) + '</b>';
+      if (p.display_name && p.display_name != p.name) html += ' <span style="color:#666;">(' + esc(p.display_name) + ')</span>';
+      if (p.is_default) html += ' <span class="chb-badge chb-badge-gray">默认</span>';
+      html += '</div>';
+      html += '<div class="chb-card-actions">';
+      html += '<button class="chb-btn chb-btn-sm" onclick="editPolicy(\'' + esc(p.name) + '\')">编辑</button>';
+      if (!p.is_default) {
+        html += ' <button class="chb-btn chb-btn-sm" onclick="clonePolicy(\'' + esc(p.name) + '\')">复制</button>';
+        html += ' <button class="chb-btn chb-btn-sm chb-btn-danger" onclick="delPolicy(\'' + esc(p.name) + '\')">删除</button>';
+      }
+      html += '</div>';
+      html += '</div>';
+      if (p.notes) {
+        html += '<div style="font-size:12px;color:#999;margin-top:4px;">' + esc(p.notes) + '</div>';
+      }
+      if (p.is_default) {
+        html += '<div style="font-size:11px;color:#999;margin-top:4px;">默认策略, 不可删除; 未绑定策略的链路自动使用此策略</div>';
+      }
+      html += '</div></div>';
+    });
+    area.innerHTML = html;
+  });
+}
+
+// ===== 编辑表单 =====
+function showAddPolicy() {
+  document.getElementById('policy_form_title').textContent = '新建策略';
+  document.getElementById('p_edit_name').value = '';
+  document.getElementById('p_is_default').value = '0';
+  document.getElementById('p_name').value = '';
+  document.getElementById('p_name').disabled = false;
+  document.getElementById('p_display_name').value = '';
+  document.getElementById('p_notes').value = '';
+  document.getElementById('rs_geosite_cn').checked = true;
+  document.getElementById('rs_geoip_cn').checked = true;
+  document.getElementById('p_direct').value = '';
+  document.getElementById('p_proxy').value = '';
+  document.getElementById('p_json').value = '';
+  switchTab('form');
+  document.getElementById('policy_form').style.display = '';
+}
+
+function editPolicy(name) {
+  XHR.get(POLICIES_GET_URL + '?name=' + encodeURIComponent(name), null, function(x, rv) {
+    if (!rv || rv.error) { showMsg('获取失败: ' + (rv && rv.error ? rv.error : ''), 'error'); return; }
+    document.getElementById('policy_form_title').textContent = '编辑: ' + name;
+    document.getElementById('p_edit_name').value = name;
+    document.getElementById('p_is_default').value = rv.is_default ? '1' : '0';
+    document.getElementById('p_name').value = name;
+    document.getElementById('p_name').disabled = true;  // 编辑时文件名不可改
+    document.getElementById('p_display_name').value = rv.display_name || '';
+    document.getElementById('p_notes').value = rv.notes || '';
+    // rule_sets 复选
+    var rsTags = (rv.rule_sets || []).map(function(r){return r.tag;});
+    document.getElementById('rs_geosite_cn').checked = rsTags.indexOf('geosite-cn') >= 0;
+    document.getElementById('rs_geoip_cn').checked = rsTags.indexOf('geoip-cn') >= 0;
+    // domain suffix
+    document.getElementById('p_direct').value = (rv.direct_domain_suffix || []).join('\n');
+    document.getElementById('p_proxy').value = (rv.proxy_domain_suffix || []).join('\n');
+    // JSON 模式内容
+    var jsonObj = {
+      name: rv.display_name || name,
+      notes: rv.notes || '',
+      rule_sets: rv.rule_sets || [],
+      direct_domain_suffix: rv.direct_domain_suffix || [],
+      proxy_domain_suffix: rv.proxy_domain_suffix || []
+    };
+    document.getElementById('p_json').value = JSON.stringify(jsonObj, null, 2);
+    switchTab('form');
+    document.getElementById('policy_form').style.display = '';
+  });
+}
+
+function cancelPolicy() {
+  document.getElementById('policy_form').style.display = 'none';
+}
+
+// ===== Tab 切换 (表单 <-> JSON) =====
+function switchTab(tab) {
+  if (tab === currentTab) return;
+  // 切换前同步内容
+  if (currentTab === 'form' && tab === 'json') {
+    // 表单 -> JSON
+    var json = formToJson();
+    document.getElementById('p_json').value = JSON.stringify(json, null, 2);
+  } else if (currentTab === 'json' && tab === 'form') {
+    // JSON -> 表单, 解析失败则留在 JSON tab
+    var raw = document.getElementById('p_json').value;
+    try {
+      var parsed = JSON.parse(raw);
+      jsonToForm(parsed);
+    } catch (e) {
+      alert('JSON 解析失败, 无法切换到表单模式:\n' + e.message + '\n\n请修正 JSON 后再切换');
+      return;  // 不切换
+    }
+  }
+  currentTab = tab;
+  document.getElementById('tab_form').style.display = (tab === 'form') ? '' : 'none';
+  document.getElementById('tab_json').style.display = (tab === 'json') ? '' : 'none';
+  document.getElementById('tab_form_btn').style.fontWeight = (tab === 'form') ? 'bold' : 'normal';
+  document.getElementById('tab_json_btn').style.fontWeight = (tab === 'json') ? 'bold' : 'normal';
+}
+
+function formToJson() {
+  var ruleSets = [];
+  if (document.getElementById('rs_geosite_cn').checked) {
+    ruleSets.push({tag:'geosite-cn',type:'remote',format:'binary',url:'https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs',download_detour:'direct'});
+  }
+  if (document.getElementById('rs_geoip_cn').checked) {
+    ruleSets.push({tag:'geoip-cn',type:'remote',format:'binary',url:'https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs',download_detour:'direct'});
+  }
+  var directArr = document.getElementById('p_direct').value.split('\n').map(function(s){return s.trim();}).filter(function(s){return s.length > 0;});
+  var proxyArr = document.getElementById('p_proxy').value.split('\n').map(function(s){return s.trim();}).filter(function(s){return s.length > 0;});
+  return {
+    name: document.getElementById('p_display_name').value || document.getElementById('p_name').value,
+    notes: document.getElementById('p_notes').value,
+    rule_sets: ruleSets,
+    direct_domain_suffix: directArr,
+    proxy_domain_suffix: proxyArr
+  };
+}
+
+function jsonToForm(parsed) {
+  document.getElementById('p_display_name').value = parsed.name || '';
+  document.getElementById('p_notes').value = parsed.notes || '';
+  var rsTags = (parsed.rule_sets || []).map(function(r){return r.tag;});
+  document.getElementById('rs_geosite_cn').checked = rsTags.indexOf('geosite-cn') >= 0;
+  document.getElementById('rs_geoip_cn').checked = rsTags.indexOf('geoip-cn') >= 0;
+  document.getElementById('p_direct').value = (parsed.direct_domain_suffix || []).join('\n');
+  document.getElementById('p_proxy').value = (parsed.proxy_domain_suffix || []).join('\n');
+}
+
+// ===== 保存 =====
+function savePolicy() {
+  var editName = document.getElementById('p_edit_name').value;
+  var name = document.getElementById('p_name').value.trim();
+  var displayName = document.getElementById('p_display_name').value.trim();
+  var notes = document.getElementById('p_notes').value.trim();
+
+  if (!name) { showMsg('文件名必填', 'error'); return; }
+  if (!name.match(/^[a-z0-9-]+$/)) { showMsg('文件名只允许小写字母/数字/连字符', 'error'); return; }
+
+  // 根据当前 tab 取 content
+  var content;
+  if (currentTab === 'form') {
+    content = JSON.stringify(formToJson());
+  } else {
+    content = document.getElementById('p_json').value;
+    // 校验 JSON 合法
+    try { JSON.parse(content); } catch (e) {
+      showMsg('JSON 不合法: ' + e.message, 'error');
+      return;
+    }
+  }
+
+  var params = 'name=' + encodeURIComponent(name) +
+               '&display_name=' + encodeURIComponent(displayName) +
+               '&notes=' + encodeURIComponent(notes) +
+               '&content=' + encodeURIComponent(content);
+  showMsg('正在保存...', 'info');
+  xhrPost(POLICIES_SAVE_URL, params, function(x, rv) {
+    if (rv && rv.status == 'ok') {
+      showMsg('已保存', 'success');
+      document.getElementById('policy_form').style.display = 'none';
+      loadPolicies();
+    } else {
+      showMsg('保存失败: ' + (rv && rv.error ? rv.error : ''), 'error');
+    }
+  });
+}
+
+// ===== 复制 =====
+function clonePolicy(srcName) {
+  var destName = prompt('新策略文件名 (小写字母/数字/连字符):', srcName + '-copy');
+  if (!destName) return;
+  if (!destName.match(/^[a-z0-9-]+$/)) { showMsg('文件名格式错误', 'error'); return; }
+  xhrPost(POLICIES_CLONE_URL, 'src=' + encodeURIComponent(srcName) + '&dest=' + encodeURIComponent(destName), function(x, rv) {
+    if (rv && rv.status == 'ok') {
+      showMsg('已复制为 ' + destName, 'success');
+      loadPolicies();
+    } else {
+      showMsg('复制失败: ' + (rv && rv.error ? rv.error : ''), 'error');
+    }
+  });
+}
+
+// ===== 删除 =====
+function delPolicy(name) {
+  if (!confirm('确认删除策略 ' + name + '?\n如有链路在用会被拒绝')) return;
+  xhrPost(POLICIES_DEL_URL, 'name=' + encodeURIComponent(name), function(x, rv) {
+    if (rv && rv.status == 'ok') {
+      showMsg('已删除', 'success');
+      loadPolicies();
+    } else {
+      showMsg('删除失败: ' + (rv && rv.error ? rv.error : ''), 'error');
+    }
+  });
+}
+
+// 初始化
+loadPolicies();
+</script>
+<%+footer%>
