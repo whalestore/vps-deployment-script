@@ -1195,11 +1195,42 @@ function action_network_topology()
                     if arp_state == "REACHABLE" or arp_state == "PERMANENT" then status = "active"
                     elseif arp_state == "STALE" or arp_state == "DELAY" then status = "stale"
                     end
+                    -- 设备类型探测: ping 读 TTL (Windows=128, Linux/Mac/iOS/Android=64)
+                    -- 离线设备不 ping (会阻塞), 只对 active/stale 的设备探测
+                    local device_type = "未知"
+                    if status ~= "offline" then
+                        local ttl_raw = shell_exec("ping -c 1 -W 1 " .. l.ip .. " 2>/dev/null")
+                        local ttl = tonumber(ttl_raw:match("ttl=(%d+)"))
+                        if ttl then
+                            if ttl >= 100 and ttl <= 128 then
+                                device_type = "Windows"
+                            elseif ttl >= 60 and ttl <= 64 then
+                                -- TTL=64 的细分: 根据 hostname 推断
+                                local hn = l.hostname:lower()
+                                if hn:match("iphone") or hn:match("ipad") then
+                                    device_type = "iOS"
+                                elseif hn:match("mac") or hn:match("macbook") then
+                                    device_type = "macOS"
+                                elseif hn:match("android") or hn:match("samsung") or hn:match("huawei") or hn:match("xiaomi") or hn:match("redmi") then
+                                    device_type = "Android"
+                                elseif hn:match("miwifi") or hn:match("router") or hn:match("openwrt") then
+                                    device_type = "路由器"
+                                else
+                                    device_type = "Linux/Mac/移动端"
+                                end
+                            elseif ttl >= 240 and ttl <= 255 then
+                                device_type = "网络设备"
+                            else
+                                device_type = "其他(ttl=" .. ttl .. ")"
+                            end
+                        end
+                    end
                     table.insert(entry.devices, {
                         hostname = l.hostname,
                         ip = l.ip,
                         mac = l.mac,
-                        status = status
+                        status = status,
+                        device_type = device_type
                     })
                 end
             end

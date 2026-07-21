@@ -229,7 +229,11 @@ function loadTopology() {
               var dotLabel = dev.status == 'active' ? '活跃' : dev.status == 'stale' ? '空闲' : '离线';
               html += '<div style="display:flex;align-items:center;padding:2px 0;font-size:13px;">';
               html += '<span class="chb-status-dot ' + dotClass + '"></span>';
-              html += '<span style="flex:1;">' + esc(dev.hostname) + '</span>';
+              html += '<span style="flex:1;">' + esc(dev.hostname);
+              if (dev.device_type && dev.device_type != '未知') {
+                html += ' <span style="color:#999;font-size:11px;">(' + esc(dev.device_type) + ')</span>';
+              }
+              html += '</span>';
               html += '<span style="color:#666;font-size:11px;">' + esc(dev.ip) + ' &middot; ' + dotLabel + '</span>';
               html += '</div>';
             });
