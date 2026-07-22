@@ -1,0 +1,114 @@
+<%+header%>
+<h2 name="content">网络状态</h2>
+
+<div class="chb-card">
+  <div class="chb-card-header"><h3 class="chb-card-title">网口状态</h3></div>
+  <div class="chb-card-body">
+    <table class="chb-table fixed">
+      <colgroup>
+        <col style="width:10%"><col style="width:8%"><col style="width:8%"><col style="width:12%">
+        <col style="width:8%"><col style="width:10%"><col style="width:15%"><col style="width:29%">
+      </colgroup>
+      <thead><tr>
+        <th>端口</th><th>角色</th><th>链路</th><th>速率</th><th>双工</th><th>达标</th><th>IP 地址</th><th>备注</th>
+      </tr></thead>
+      <tbody id="iface_body"><tr><td colspan="8" class="chb-empty">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="chb-card">
+  <div class="chb-card-header"><h3 class="chb-card-title">端口拓扑</h3></div>
+  <div class="chb-card-body">
+    <pre id="topology">加载中...</pre>
+  </div>
+</div>
+
+<div class="chb-card">
+  <div class="chb-card-header"><h3 class="chb-card-title">已连接设备</h3></div>
+  <div class="chb-card-body">
+    <table class="chb-table fixed">
+      <colgroup>
+        <col style="width:25%"><col style="width:25%"><col style="width:25%"><col style="width:25%">
+      </colgroup>
+      <thead><tr>
+        <th>IP 地址</th><th>MAC 地址</th><th>设备名</th><th>所在端口</th>
+      </tr></thead>
+      <tbody id="dev_body"><tr><td colspan="4" class="chb-empty">加载中...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="chb-card-actions" style="justify-content:flex-end;">
+  <button type="button" class="chb-btn chb-btn-ghost" onclick="loadNet()">刷新</button>
+</div>
+
+<script type="text/javascript">
+var NET_URL='<%=luci.dispatcher.build_url("admin","services","tiktokproxy","network_data")%>';
+function esc(s){if(!s)return'';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+
+function loadNet(){
+  document.getElementById('iface_body').innerHTML='<tr><td colspan="8" class="chb-empty">检测中...</td></tr>';
+  XHR.get(NET_URL,null,function(x,rv){
+    if(!rv){return;}
+    var tb=document.getElementById('iface_body');
+    if(rv.interfaces&&rv.interfaces.length){
+      tb.innerHTML='';
+      rv.interfaces.forEach(function(iface){
+        var sp,sq,sn;
+        if(iface.link!='up'){sp='<span class="chb-stat-desc">-</span>';sq='<span class="chb-badge chb-badge-gray">未连接</span>';sn=esc(iface.note||'');}
+        else if(iface.speed>=1000){sp='<span class="chb-badge chb-badge-green">'+(iface.speed/1000)+' Gbps</span>';sq='<span class="chb-badge chb-badge-green">达标</span>';sn=esc(iface.note||'');}
+        else if(iface.speed==100){sp='<span class="chb-stat-desc">100 Mbps</span>';sq='<span class="chb-badge chb-badge-orange">百兆</span>';sn=esc(iface.note||'');}
+        else if(iface.speed>0&&iface.speed<100){sp='<span class="chb-badge chb-badge-red">'+iface.speed+' Mbps</span>';sq='<span class="chb-badge chb-badge-red">极慢</span>';sn=esc(iface.note||'');}
+        else if(iface.speed==0&&iface.link=='up'&&(iface.note||'').indexOf('待机')>=0){sp='<span class="chb-stat-desc">待机</span>';sq='<span class="chb-badge chb-badge-gray">休眠中</span>';sn=esc(iface.note||'');}
+        else{sp='<span>'+iface.speed+'</span>';sq='<span class="chb-badge chb-badge-gray">未知</span>';sn=esc(iface.note||'');}
+        var tr='<tr>';
+        tr+='<td><b>'+esc(iface.name)+'</b></td>';
+        tr+='<td><span class="chb-badge '+(iface.role=='wan'?'chb-badge-blue':'chb-badge-green')+'">'+(iface.role=='wan'?'WAN':'LAN')+'</span></td>';
+        tr+='<td>'+(iface.link=='up'?'<span class="chb-status-dot green"></span>':'<span class="chb-status-dot gray"></span>')+'</td>';
+        tr+='<td>'+sp+'</td>';
+        tr+='<td>'+esc(iface.duplex||'-')+'</td>';
+        tr+='<td>'+sq+'</td>';
+        tr+='<td class="mono">'+esc(iface.ip||'-')+'</td>';
+        tr+='<td class="mono chb-stat-desc">'+sn+'</td>';
+        tr+='</tr>';
+        tb.innerHTML+=tr;
+      });
+    } else { tb.innerHTML='<tr><td colspan="8" class="chb-empty">无数据</td></tr>'; }
+
+    // 拓扑
+    var lines=[];
+    var wan=rv.interfaces?rv.interfaces.find(function(i){return i.role=='wan';}):null;
+    var lans=rv.interfaces?rv.interfaces.filter(function(i){return i.role!='wan';}):[];
+    lines.push('┌─ 光猫 / 上行宽带');
+    if(wan){var ws=wan.link=='up'?(wan.speed>=1000?(wan.speed/1000)+'G':'?'):'?';lines.push('│');lines.push('│  ['+wan.name+' WAN] '+ws+'  '+(wan.link=='up'?'✅':'❌'));}
+    lines.push('│');
+    var router_ip = wan ? wan.ip : (lans.length ? lans[0].ip : '192.168.1.13');
+    lines.push('└─ 出海播 路由器 (' + esc(router_ip) + ')');
+    lines.push('     │  sing-box TUN 透明代理');
+    if(rv.aps&&rv.aps.length){
+      rv.aps.forEach(function(ap){
+        var pt=ap.port?' ['+ap.port+']':'';
+        lines.push('     │');
+        lines.push('     ├─'+(ap.online?'✅':'❌')+pt+' '+esc(ap.ssid||'AP')+' ('+esc(ap.ap_ip||'?')+')');
+        lines.push('     │      └─ 手机/电脑 → TikTok 直播 (→'+esc(ap.us_ip||'美国')+')');
+      });
+    } else if(lans.length){
+      lans.forEach(function(lan){if(lan.link=='up'){var ls=lan.speed>=1000?(lan.speed/1000)+'G':lan.speed+'M';lines.push('     │');lines.push('     ├─ ✅ ['+lan.name+' LAN] '+ls);}});
+    }
+    lines.push('     └─ 其他 LAN 设备');
+    document.getElementById('topology').textContent=lines.join('\n');
+
+    // 设备
+    var db=document.getElementById('dev_body');
+    if(rv.devices&&rv.devices.length){
+      db.innerHTML='';
+      rv.devices.forEach(function(d){
+        db.innerHTML+='<tr><td class="mono">'+esc(d.ip||'-')+'</td><td class="mono">'+esc(d.mac||'-')+'</td><td>'+esc(d.name||'(未命名)')+'</td><td>'+esc(d.port||'-')+'</td></tr>';
+      });
+    } else { db.innerHTML='<tr><td colspan="4" class="chb-empty">无设备</td></tr>'; }
+  });
+}
+loadNet();
+</script>
+<%+footer%>

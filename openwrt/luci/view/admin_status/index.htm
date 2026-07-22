@@ -369,7 +369,7 @@ function runVerification() {
     var allPass = results.exitIp === true && results.latency === true;
     var html = '';
     html += (results.exitIp === true ? '✅' : '❌') + ' 出口 IP 检测: ';
-    html += results.exitIp === true ? (esc(statusData.exit_ip) + ' · 非中国 IP') : '失败或为中国 IP';
+    html += results.exitIp === true ? (esc(statusData.exit_ip) + ' · 海外 IP') : (exitIp ? '中国 IP (本机直连)' : '获取失败');
     html += '<br>';
     html += (results.latency === true ? '✅' : '❌') + ' 链路延迟测试: ';
     html += results.latencyDetail || '无数据';
@@ -520,14 +520,26 @@ function renderProxyCard() {
 function renderExitIpCard() {
   var isRunning = statusData && statusData.status == 'running';
   var cardClass = isRunning ? 'active' : 'inactive';
-  var ip = isRunning ? (statusData.exit_ip || '-') : '中国 IP';
-  var desc = isRunning ? '美国 · 住宅 IP' : '直连模式';
+  var ip = isRunning ? (statusData.exit_ip || '-') : '直连';
+  // 根据 IP 段判断归属地 (粗略), 不硬编码"美国"
+  var desc = '直连模式';
+  if (isRunning && ip && ip != '-') {
+    if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(ip)) {
+      desc = '内网 IP (软路由本机)';
+    } else if (/^(22[0-3]\.|21[6-9]\.|22[0-9]\.|23[0-9]\.)/.test(ip)) {
+      desc = '美国 · 住宅 IP';
+    } else if (/^(183\.|182\.|111\.|112\.|113\.|114\.|115\.|116\.|117\.|118\.|119\.|120\.|121\.|122\.|123\.|124\.|125\.|180\.)/.test(ip)) {
+      desc = '中国 IP (本机直连, 非客户端出口)';
+    } else {
+      desc = '海外 IP';
+    }
+  }
 
   var html = '<div class="ds-stat-card ' + cardClass + '" id="card-exit">';
   html += '<div class="ds-stat-row">';
   html += '<span class="ds-stat-icon ds-stat-icon-ip"></span>';
   html += '<div class="ds-stat-body">';
-  html += '<div class="label">出口 IP</div>';
+  html += '<div class="label">出口 IP (软路由本机)</div>';
   html += '<div class="value-lg" id="exit_ip">' + esc(ip) + '</div>';
   html += '</div>';
   html += '</div>';
@@ -539,15 +551,24 @@ function renderExitIpCard() {
 function renderChainStatCard() {
   var isRunning = statusData && statusData.status == 'running';
   var cardClass = isRunning ? 'active' : 'inactive';
-  var active = findActiveChain();
-  var name = active ? esc(active.name) : '-';
-  var path = active && active.hops ? active.hops.map(function(h){return h.name;}).join(' -> ') : (active ? (active.hop_names || '') : '');
+  // 多链路并发模式: 显示所有 enabled 链路, 不再用 findActiveChain 单选
+  var enabledChains = (statusData && statusData.chains) ? statusData.chains.filter(function(c){return c.enabled;}) : [];
+  var name, path;
+  if (enabledChains.length === 0) {
+    name = '-'; path = '';
+  } else if (enabledChains.length === 1) {
+    name = esc(enabledChains[0].name);
+    path = enabledChains[0].hop_names || (enabledChains[0].hops || []).map(function(h){return h.name;}).join(' -> ');
+  } else {
+    name = enabledChains.length + ' 条链路并发';
+    path = enabledChains.map(function(c){return c.name;}).join(' / ');
+  }
 
   var html = '<div class="ds-stat-card ' + cardClass + '" id="card-chain">';
   html += '<div class="ds-stat-row">';
   html += '<span class="ds-stat-icon ds-stat-icon-chain"></span>';
   html += '<div class="ds-stat-body">';
-  html += '<div class="label">当前链路</div>';
+  html += '<div class="label">运行链路</div>';
   html += '<div class="value" id="active_chain_name">' + name + '</div>';
   html += '</div>';
   html += '</div>';
@@ -636,12 +657,18 @@ function renderChainCard(c, active) {
   html += '</div>';
 
   var hops = c.hops || [];
+  // 动态获取服务子网信息 (不再硬编码 br-lan)
+  var servedSubnets = overviewSubnets.filter(function(s){ return s.chain_id == c.id; });
+  var localNetDesc = 'WAN: eth1';
+  if (servedSubnets.length) {
+    localNetDesc = servedSubnets.map(function(s){ return s.name + ' (' + s.gateway + ')'; }).join(', ');
+  }
   html += '<div class="ds-hop-path">';
   html += '<div class="ds-hop-node ds-hop-source">';
   html += '<span class="ds-hop-flag">🏠</span>';
   html += '<div>';
   html += '<div class="ds-hop-name">本地网络</div>';
-  html += '<div class="ds-hop-ip">WAN: eth1 · LAN: br-lan (192.168.5.1)</div>';
+  html += '<div class="ds-hop-ip">' + esc(localNetDesc) + '</div>';
   html += '<div class="ds-hop-metrics">源IP: ' + esc(c.source_ip || '-') + '</div>';
   html += '</div>';
   html += '</div>';
