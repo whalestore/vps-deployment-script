@@ -1,0 +1,933 @@
+<%#
+ chb Dashboard - 系统总览面板
+ 基于 design.md Geist 设计系统 + 出海播品牌色
+ 状态驱动的三视图：引导视图 / 快速开启视图 / 仪表盘视图
+
+ 数据来源：
+   /admin/services/tiktokproxy/status -> 代理状态 + 链路列表 + tun
+   /admin/status/overview?status=1    -> CPU/内存/网络/DHCP
+   http://VPS_IP:api_port             -> VPS 实时指标 (CPU/流量)
+-%>
+
+<%
+local disp = require "luci.dispatcher"
+local sys = require "luci.sys"
+local http = require "luci.http"
+local fs = require "nixio.fs"
+
+-- ── JSON API: ?status=1 返回系统信息（被前端 AJAX 轮询） ──
+if http.formvalue("status") then
+    local stat = require "luci.tools.status"
+    local ntm = require "luci.model.network".init()
+    local sysinfo = luci.util.ubus("system", "info") or {}
+    local meminfo = sysinfo.memory or {total=0, free=0, buffered=0}
+    local mem_cached = luci.sys.exec("sed -e '/^Cached: /!d; s#Cached: *##; s# kB##g' /proc/meminfo")
+    local swapinfo = sysinfo.swap or {total=0, free=0}
+    local wan = ntm:get_wannet()
+    local conn_count = tonumber(fs.readfile("/proc/sys/net/netfilter/nf_conntrack_count") or "") or 0
+    local conn_max = tonumber(luci.sys.exec("sysctl -n -e net.nf_conntrack_max net.ipv4.netfilter.ip_conntrack_max"):match("%d+")) or 4096
+    local cpu_usage = luci.sys.exec("expr 100 - $(top -n 1 | grep -E '^CPU:' | awk -F '%' '{print$4}' | awk -F ' ' '{print$2}' | awk '{print int($1 + 0.5)}')") or "0"
+    local user_info = luci.sys.exec("cat /proc/net/arp | grep '0x2' | wc -l") or "0"
+    local rv = {
+        cpuusage = tonumber(cpu_usage:match("%d+")) or 0,
+        uptime = sysinfo.uptime or 0,
+        load = sysinfo.load or {0,0,0},
+        memory = meminfo,
+        swap = swapinfo,
+        connmax = conn_max,
+        conncount = conn_count,
+        userinfo = tonumber(user_info:match("%d+")) or 0,
+        leases = stat.dhcp_leases(),
+        leases6 = stat.dhcp6_leases()
+    }
+    if wan then
+        rv.wan = { ipaddr=wan:ipaddr(), gwaddr=wan:gwaddr(), netmask=wan:netmask(),
+            dns=wan:dnsaddrs(), expires=wan:expires(), uptime=wan:uptime(),
+            proto=wan:proto(), ifname=wan:ifname(), link=wan:adminlink() }
+    end
+    luci.http.prepare_content("application/json")
+    luci.http.write_json(rv)
+    return
+end
+
+-- ── 服务端渲染的系统信息 ──
+local stx_url = disp.build_url("admin", "services", "tiktokproxy", "status")
+local ov_url  = disp.build_url("admin", "status", "overview")
+local on_url  = disp.build_url("admin", "services", "tiktokproxy", "on")
+local off_url = disp.build_url("admin", "services", "tiktokproxy", "off")
+local activate_url = disp.build_url("admin", "services", "tiktokproxy", "chains_activate")
+local diag_url = disp.build_url("admin", "services", "tiktokproxy", "diagnostics")
+local vps_url = disp.build_url("admin", "services", "tiktokproxy", "vps")
+local boardinfo = sys.ubus and sys.ubus("system", "board") or {}
+local hostname = sys.hostname() or "?"
+local model = boardinfo.model or "?"
+%>
+
+<%+header%>
+
+<h2 name="content">系统总览</h2>
+
+<!-- ════════════════════════════════════════════════════════════
+     状态机外壳 - JS 根据 action_status 返回值渲染三个视图之一：
+     引导视图 / 快速开启视图 / 仪表盘视图
+     ════════════════════════════════════════════════════════════ -->
+<div id="view-root">
+  <div class="ds-stat-card" style="text-align:center;padding:3rem;">
+    <p style="font-size:14px;color:var(--ds-text-muted);">加载中...</p>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════
+     JavaScript
+     ════════════════════════════════════════════════════════════ -->
+<script type="text/javascript">
+var STATUS_URL    = '<%=stx_url%>';
+var OVERVIEW_URL  = '<%=ov_url%>';
+var ON_URL        = '<%=on_url%>';
+var OFF_URL       = '<%=off_url%>';
+var ACTIVATE_URL  = '<%=activate_url%>';
+var DIAG_URL      = '<%=diag_url%>';
+var VPS_URL       = '<%=vps_url%>';
+var SUB_LIST_URL  = '<%=luci.dispatcher.build_url("admin","services","tiktokproxy","subnets_list")%>';
+var HOSTNAME      = '<%=pcdata(hostname)%>';
+var MODEL         = '<%=pcdata(model)%>';
+
+// ── 全局状态 ──
+var statusData = null;      // action_status 最新返回值 {status, exit_ip, tun, chains[]}
+var chainsData = [];
+var vpsMetrics = {};
+var overviewSubnets = [];   // subnets_list 返回值，供链路卡片显示服务子网
+var latencies = {};         // { chain_id_segment: ms }
+var metricsTimer = null;
+var metricsInterval = 30;
+var overviewTimer = null;
+var statusTimer = null;
+
+// ── 引导状态标记 ──
+function getOnboarded() { try { return localStorage.getItem('chb_onboarded') === '1'; } catch(e) { return false; } }
+function setOnboarded() { try { localStorage.setItem('chb_onboarded', '1'); } catch(e) {} }
+function getVerified() { try { return sessionStorage.getItem('chb_verified') === '1'; } catch(e) { return false; } }
+function setVerified() { try { sessionStorage.setItem('chb_verified', '1'); } catch(e) {} }
+
+// ── 初始化 ──
+loadStatus();
+overviewTimer = setInterval(loadOverview, 5000);
+startMetricsPoll();
+
+// ═══════════════════════════════════════════════════════
+//  数据加载
+// ═══════════════════════════════════════════════════════
+
+// ── 工具：GET 请求（不依赖 xhr.js）──
+function fetchJson(url, params) {
+  var u = url;
+  if (params) {
+    var q = Object.keys(params).map(function(k){ return k+'='+encodeURIComponent(params[k]); }).join('&');
+    u += (u.indexOf('?') >= 0 ? '&' : '?') + q;
+  }
+  return fetch(u).then(function(r){ return r.json(); });
+}
+
+// ── 工具：POST 请求（不依赖 xhr.js）──
+function postJson(url, data) {
+  var body = Object.keys(data).map(function(k){ return k+'='+encodeURIComponent(data[k]); }).join('&');
+  return fetch(url, {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:body}).then(function(r){ return r.json(); });
+}
+
+// ═══════════════════════════════════════════════════════
+//  数据加载
+// ═══════════════════════════════════════════════════════
+
+function loadStatus() {
+  // 并行拉取 subnets_list（供链路卡片显示服务子网），与 status 拉取互不阻塞
+  fetchJson(SUB_LIST_URL).then(function(sv) {
+    overviewSubnets = (sv && sv.subnets) ? sv.subnets : [];
+  }).catch(function(e) {});
+
+  fetchJson(STATUS_URL).then(function(rv) {
+    if (!rv) return;
+    statusData = rv;
+    chainsData = rv.chains || [];
+    renderView();
+  }).catch(function(e) { console.error('loadStatus error:', e); });
+}
+
+function loadOverview() {
+  fetchJson(OVERVIEW_URL, {status:1}).then(function(info) {
+    if (!info) return;
+    // 只有仪表盘视图在 DOM 中时才更新系统信息
+    if (document.getElementById('sysinfo_tbl')) {
+      updateSystemInfo(info);
+      updateNetworkInfo(info);
+    }
+  }).catch(function(e) {});
+}
+
+// ═══════════════════════════════════════════════════════
+//  状态机 - 决定渲染哪个视图
+// ═══════════════════════════════════════════════════════
+
+function renderView() {
+  var root = document.getElementById('view-root');
+  var hasChains = chainsData.length > 0;
+  var isRunning = statusData && statusData.status == 'running';
+  var onboarded = getOnboarded();
+  var verified = getVerified();
+
+  if (!hasChains) {
+    // 无链路 -> 只有引导面板 Step 1（没有仪表盘内容可显示）
+    root.innerHTML = renderGuideStep1();
+    return;
+  }
+
+  // 有链路：引导面板 + 仪表盘始终同时存在
+  var step = 4;  // 4 = 全部完成（收起态）
+  var collapsed = false;
+  var afterInit = null;
+
+  if (!onboarded && !isRunning) {
+    // 首次用户，有链路未开 -> 引导 Step 2
+    step = 2;
+    afterInit = function() { previewChainPath(); };
+  } else if (!onboarded && isRunning && !verified) {
+    // 首次用户，刚开，待验证 -> 引导 Step 3 + 自动验证
+    step = 3;
+    afterInit = function() { runVerification(); };
+  } else if (!onboarded && isRunning && verified) {
+    // 验证通过 -> 标记 onboarded，引导收起
+    setOnboarded();
+    step = 4;
+    collapsed = true;
+  } else {
+    // onboarded 用户 -> 引导已完成，收起
+    step = 4;
+    collapsed = true;
+  }
+
+  root.innerHTML = renderGuidePanel(step, collapsed) + renderDashboardView();
+  if (afterInit) afterInit();
+}
+
+// ═══════════════════════════════════════════════════════
+//  Stepper 渲染
+// ═══════════════════════════════════════════════════════
+
+function renderStepper(activeStep) {
+  var steps = [
+    { num: 1, label: '添加链路' },
+    { num: 2, label: '开启代理' },
+    { num: 3, label: '验证连通' }
+  ];
+  var html = '<div class="chb-stepper">';
+  for (var i = 0; i < steps.length; i++) {
+    var s = steps[i];
+    var cls = s.num < activeStep ? 'done' : (s.num == activeStep ? 'active' : '');
+    var display = s.num < activeStep ? '✓' : s.num;
+    html += '<div class="chb-step ' + cls + '">';
+    html += '<div class="chb-step-num">' + display + '</div>';
+    html += '<div class="chb-step-label">' + s.label + '</div>';
+    html += '<div class="chb-step-line"></div>';
+    html += '</div>';
+  }
+  html += '</div>';
+  return html;
+}
+
+// ═══════════════════════════════════════════════════════
+//  引导面板（可折叠，放在仪表盘上方）
+// ═══════════════════════════════════════════════════════
+
+// Step 1: 无链路时的全屏引导（不叠加仪表盘）
+function renderGuideStep1() {
+  var html = '<div class="chb-card"><div class="chb-card-body">';
+  html += '<h3 style="margin:0 0 0.25rem;font-size:1.125rem;">🚀 快速开始</h3>';
+  html += '<p style="margin:0 0 0.5rem;font-size:0.8125rem;color:var(--chb-text-muted);">按以下三步完成代理配置，约 5 分钟</p>';
+  html += renderStepper(1);
+  html += '<div class="chb-separator horizontal"></div>';
+  html += '<h4 style="font-size:0.9375rem;font-weight:600;margin:1rem 0 0.5rem;">Step 1 · 添加链路 <span class="chb-badge chb-badge-brand" style="font-size:0.6875rem;margin-left:0.5rem;">当前步骤</span></h4>';
+  html += '<p style="font-size:0.875rem;color:var(--chb-text-muted);margin:0 0 1rem;">你还没有任何代理链路。</p>';
+  html += '<div class="chb-alert chb-alert-info">链路 = 从你的网络经过海外 VPS 到达目标网站的路径。需要先在「节点与链路管理」页面添加 VPS 节点并组成链路。</div>';
+  html += '<div class="chb-btn-group" style="margin-top:1.5rem;">';
+  html += '<button class="chb-btn chb-btn-primary chb-btn-lg" onclick="goToVps()">前往添加链路 -&gt;</button>';
+  html += '</div>';
+  html += '</div></div>';
+  return html;
+}
+
+// 可折叠引导面板（Step 2/3/4），放在仪表盘上方
+function renderGuidePanel(step, collapsed) {
+  var bodyStyle = collapsed ? 'display:none;' : '';
+  var chevron = collapsed ? '▸' : '▾';
+  var html = '<div class="chb-card" id="guide_panel" style="margin-bottom:1rem;">';
+  html += '<div class="chb-card-header" style="cursor:pointer;user-select:none;" onclick="toggleGuidePanel()">';
+  html += '<div style="display:flex;align-items:center;gap:0.5rem;">';
+  html += '<span style="font-size:0.75rem;color:var(--chb-text-faint);">' + chevron + '</span>';
+  html += '<h3 class="chb-card-title" style="font-size:0.9375rem;">🚀 快速开始</h3>';
+  var stepLabel = step == 2 ? 'Step 2 · 开启代理' : (step == 3 ? 'Step 3 · 验证连通' : '✓ 配置已完成');
+  html += '<span style="font-size:0.75rem;color:var(--chb-text-muted);">' + stepLabel + '</span>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="chb-card-body" id="guide_panel_body" style="' + bodyStyle + 'padding:1rem 1.25rem;">';
+  html += renderStepper(step);
+
+  if (step == 2) {
+    html += '<p style="font-size:0.8125rem;color:var(--chb-text-muted);margin:0.75rem 0 0;">选择链路并点击下方「开启代理」按钮即可启动代理。</p>';
+    html += '<div class="chb-field" style="max-width:400px;margin-top:0.75rem;margin-bottom:0;">';
+    html += '<label class="chb-label">选择链路</label>';
+    html += '<div class="chb-select-wrap"><select class="chb-input" id="chain_select" onchange="previewChainPath()">';
+    for (var i = 0; i < chainsData.length; i++) {
+      var c = chainsData[i];
+      var sel = c.enabled ? ' selected' : '';
+      html += '<option value="' + c.id + '"' + sel + '>' + esc(c.name) + ' (' + (c.hop_names || '') + ')</option>';
+    }
+    html += '</select></div>';
+    html += '<div id="chain_preview" style="margin-top:0.375rem;font-size:0.8125rem;color:var(--chb-text-muted);"></div>';
+    html += '</div>';
+  } else if (step == 3) {
+    html += '<div id="verify_content" style="margin-top:0.75rem;">';
+    html += '<div class="chb-alert chb-alert-info" id="verify_status">⏳ 正在验证连通性...</div>';
+    html += '<div id="verify_details" style="font-size:0.8125rem;color:var(--chb-text-muted);margin-top:0.5rem;line-height:1.8;"></div>';
+    html += '</div>';
+    html += '<div class="chb-btn-group" style="margin-top:0.75rem;display:none;" id="verify_actions">';
+    html += '<button class="chb-btn" onclick="runVerification()">重新测试</button> ';
+    html += '<button class="chb-btn chb-btn-primary" id="verify_done_btn" onclick="completeOnboarding()">完成引导</button>';
+    html += '</div>';
+  } else if (step == 4) {
+    html += '<p style="font-size:0.8125rem;color:var(--chb-text-muted);margin:0.75rem 0 0;">所有配置步骤已完成。如需重新配置，请在「节点与链路管理」页面管理链路。</p>';
+  }
+
+  html += '</div></div>';
+  return html;
+}
+
+function toggleGuidePanel() {
+  var body = document.getElementById('guide_panel_body');
+  if (!body) return;
+  var header = body.previousElementSibling;
+  var chevron = header.querySelector('span:first-child');
+  if (body.style.display == 'none') {
+    body.style.display = '';
+    if (chevron) chevron.textContent = '▾';
+  } else {
+    body.style.display = 'none';
+    if (chevron) chevron.textContent = '▸';
+  }
+}
+
+function goToVps() {
+  window.location = VPS_URL;
+}
+
+function previewChainPath() {
+  var sel = document.getElementById('chain_select');
+  var preview = document.getElementById('chain_preview');
+  if (!sel || !preview) return;
+  var chainId = sel.value;
+  for (var i = 0; i < chainsData.length; i++) {
+    if (String(chainsData[i].id) == String(chainId)) {
+      var c = chainsData[i];
+      var hops = c.hops || [];
+      var names = ['🇨🇳 中国移动'];
+      for (var j = 0; j < hops.length; j++) {
+        names.push(esc(hops[j].name));
+      }
+      preview.textContent = names.join(' -> ');
+      return;
+    }
+  }
+  preview.textContent = '';
+}
+
+// ═══════════════════════════════════════════════════════
+//  验证条（Step 3 验证连通）
+// ═══════════════════════════════════════════════════════
+
+function renderVerifyBar() {
+  // 不再单独使用，验证条已合并到 renderGuidePanel(3) 中
+  return '';
+}
+
+function runVerification() {
+  var statusEl = document.getElementById('verify_status');
+  var detailsEl = document.getElementById('verify_details');
+  var actionsEl = document.getElementById('verify_actions');
+  var doneBtn = document.getElementById('verify_done_btn');
+  if (!statusEl) return;
+
+  statusEl.className = 'chb-alert chb-alert-info';
+  statusEl.textContent = '⏳ 正在验证连通性...';
+  statusEl.style.cssText = '';
+  detailsEl.innerHTML = '';
+  if (actionsEl) actionsEl.style.display = 'none';
+
+  var results = { exitIp: null, latency: null };
+  var pending = 2;
+
+  function checkDone() {
+    pending--;
+    if (pending > 0) return;
+    var allPass = results.exitIp === true && results.latency === true;
+    var html = '';
+    html += (results.exitIp === true ? '✅' : '❌') + ' 出口 IP 检测: ';
+    html += results.exitIp === true ? (esc(statusData.exit_ip) + ' · 非中国 IP') : '失败或为中国 IP';
+    html += '<br>';
+    html += (results.latency === true ? '✅' : '❌') + ' 链路延迟测试: ';
+    html += results.latencyDetail || '无数据';
+    detailsEl.innerHTML = html;
+
+    if (allPass) {
+      statusEl.style.borderColor = '#bbf7d0';
+      statusEl.style.background = '#f0fdf4';
+      statusEl.style.color = '#166534';
+      statusEl.innerHTML = '✓ 连通性验证通过';
+      if (actionsEl) actionsEl.style.display = 'flex';
+      if (doneBtn) doneBtn.disabled = false;
+    } else {
+      statusEl.className = 'chb-alert chb-alert-danger';
+      statusEl.textContent = '❌ 连通性验证未通过，请检查链路配置';
+      if (actionsEl) actionsEl.style.display = 'flex';
+      if (doneBtn) doneBtn.disabled = true;
+    }
+  }
+
+  // 1. 出口 IP 检测
+  var exitIp = statusData ? statusData.exit_ip : '';
+  var isInternal = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)/.test(exitIp);
+  results.exitIp = !!exitIp && !isInternal;
+  checkDone();
+
+  // 2. 链路延迟测试
+  var active = findActiveChain();
+  if (!active) {
+    results.latency = false;
+    results.latencyDetail = '无活跃链路';
+    checkDone();
+    return;
+  }
+  fetchJson(DIAG_URL, {chain: active.id}).then(function(rv) {
+    if (!rv || !rv.legs || !rv.legs.length) {
+      results.latency = false;
+      results.latencyDetail = '无法获取延迟数据';
+    } else {
+      var allOk = true;
+      var details = [];
+      for (var j = 0; j < rv.legs.length; j++) {
+        var leg = rv.legs[j];
+        var ms = leg.latency_ms;
+        var pass = ms && ms < 500;
+        if (!pass) allOk = false;
+        details.push(esc(leg.from || '?') + ' -> ' + esc(leg.to || '?') + ': ' + (ms ? ms + 'ms' : '超时') + (pass ? ' ✅' : ' ❌'));
+        // 同时更新仪表盘链路卡片的延迟显示
+        latencies[active.id + '_' + leg.segment] = ms || null;
+      }
+      results.latency = allOk;
+      results.latencyDetail = details.join(' · ');
+      // 刷新仪表盘链路卡片
+      updateChainCards();
+    }
+    checkDone();
+  }).catch(function(e) {
+    results.latency = false;
+    results.latencyDetail = '延迟测试失败: ' + e.message;
+    checkDone();
+  });
+}
+
+function completeOnboarding() {
+  setVerified();
+  setOnboarded();
+  renderView();
+}
+
+// ═══════════════════════════════════════════════════════
+//  视图 3: 仪表盘视图
+// ═══════════════════════════════════════════════════════
+
+function renderDashboardView() {
+  var html = '';
+
+  // ── 顶行 4 指标卡 ──
+  html += '<div class="ds-stat-grid">';
+  html += renderProxyCard();
+  html += renderExitIpCard();
+  html += renderChainStatCard();
+  html += renderTunCard();
+  html += '</div>';
+
+  // ── 中行 - 刷新间隔 + 链路列表 ──
+  html += '<div class="ds-interval-selector">';
+  html += '<span>VPS 指标刷新：</span>';
+  html += '<button class="ds-interval-btn" data-sec="15" onclick="setIntervalSec(15)">15s</button>';
+  html += '<button class="ds-interval-btn active" data-sec="30" onclick="setIntervalSec(30)">30s</button>';
+  html += '<button class="ds-interval-btn" data-sec="60" onclick="setIntervalSec(60)">60s</button>';
+  html += '<button class="ds-interval-btn" data-sec="0" onclick="setIntervalSec(0)">暂停</button>';
+  html += '</div>';
+  html += '<div id="chains_area"></div>';
+
+  // ── 底行 - 系统信息 + 网络 ──
+  html += '<div class="ds-stat-grid">';
+  html += '<div class="ds-stat-card">';
+  html += '<div class="ds-section-title">系统信息</div>';
+  html += '<table class="ds-info-table" id="sysinfo_tbl">';
+  html += '<tr><td class="key">主机名</td><td class="val">' + HOSTNAME + '</td></tr>';
+  html += '<tr><td class="key">型号</td><td class="val">' + MODEL + '</td></tr>';
+  html += '<tr><td class="key">CPU 使用率</td><td class="val"><span id="si_cpu">-</span></td></tr>';
+  html += '<tr><td class="key">运行时间</td><td class="val-mono" id="si_uptime">-</td></tr>';
+  html += '<tr><td class="key">平均负载</td><td class="val-mono" id="si_load">-</td></tr>';
+  html += '<tr><td class="key">内存</td><td class="val"><span id="si_mem">-</span></td></tr>';
+  html += '</table>';
+  html += '</div>';
+  html += '<div class="ds-stat-card">';
+  html += '<div class="ds-section-title">网络</div>';
+  html += '<div id="net_info"></div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="ds-stat-card" id="dhcp_section" style="display:none;"></div>';
+
+  // 渲染后立即更新链路卡片
+  setTimeout(function() {
+    updateChainCards();
+  }, 0);
+
+  return html;
+}
+
+function renderProxyCard() {
+  var isRunning = statusData && statusData.status == 'running';
+  var cardClass = isRunning ? 'active' : 'inactive';
+  var badge = isRunning
+    ? '<span class="ds-badge ds-badge-green">运行中</span>'
+    : '<span class="ds-badge ds-badge-red">已关闭</span>';
+  var btnText = isRunning ? '关闭代理' : '开启代理';
+  var btnAction = isRunning ? 'proxyOff()' : 'proxyOn()';
+
+  var html = '<div class="ds-stat-card ' + cardClass + '" id="card-proxy">';
+  html += '<div class="ds-stat-row">';
+  html += '<span class="ds-stat-icon ds-stat-icon-status"></span>';
+  html += '<div class="ds-stat-body">';
+  html += '<div class="label">代理状态</div>';
+  html += '<div class="value" id="proxy_status">' + badge + '</div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="desc">sing-box TUN 透明代理</div>';
+  html += '<div style="margin-top:12px;">';
+  html += '<button class="ds-btn primary" onclick="' + btnAction + '">' + btnText + '</button>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderExitIpCard() {
+  var isRunning = statusData && statusData.status == 'running';
+  var cardClass = isRunning ? 'active' : 'inactive';
+  var ip = isRunning ? (statusData.exit_ip || '-') : '中国 IP';
+  var desc = isRunning ? '美国 · 住宅 IP' : '直连模式';
+
+  var html = '<div class="ds-stat-card ' + cardClass + '" id="card-exit">';
+  html += '<div class="ds-stat-row">';
+  html += '<span class="ds-stat-icon ds-stat-icon-ip"></span>';
+  html += '<div class="ds-stat-body">';
+  html += '<div class="label">出口 IP</div>';
+  html += '<div class="value-lg" id="exit_ip">' + esc(ip) + '</div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="desc" id="exit_desc">' + desc + '</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderChainStatCard() {
+  var isRunning = statusData && statusData.status == 'running';
+  var cardClass = isRunning ? 'active' : 'inactive';
+  var active = findActiveChain();
+  var name = active ? esc(active.name) : '-';
+  var path = active && active.hops ? active.hops.map(function(h){return h.name;}).join(' -> ') : (active ? (active.hop_names || '') : '');
+
+  var html = '<div class="ds-stat-card ' + cardClass + '" id="card-chain">';
+  html += '<div class="ds-stat-row">';
+  html += '<span class="ds-stat-icon ds-stat-icon-chain"></span>';
+  html += '<div class="ds-stat-body">';
+  html += '<div class="label">当前链路</div>';
+  html += '<div class="value" id="active_chain_name">' + name + '</div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="desc" id="active_chain_path">' + esc(path) + '</div>';
+  html += '</div>';
+  return html;
+}
+
+function renderTunCard() {
+  var isRunning = statusData && statusData.status == 'running';
+  var cardClass = isRunning ? 'active' : 'inactive';
+  var tun = statusData ? statusData.tun : 'missing';
+  var tunText = tun == 'created' ? '已创建' : '未创建';
+
+  var html = '<div class="ds-stat-card ' + cardClass + '" id="card-tun">';
+  html += '<div class="ds-stat-row">';
+  html += '<span class="ds-stat-icon ds-stat-icon-tun"></span>';
+  html += '<div class="ds-stat-body">';
+  html += '<div class="label">TUN 接口</div>';
+  html += '<div class="value" id="tun_status">' + tunText + '</div>';
+  html += '</div>';
+  html += '</div>';
+  html += '<div class="desc">singbox-tun</div>';
+  html += '</div>';
+  return html;
+}
+
+function findActiveChain() {
+  for (var i = 0; i < chainsData.length; i++) {
+    if (chainsData[i].enabled) return chainsData[i];
+  }
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════
+//  中行 - 链路卡片
+// ═══════════════════════════════════════════════════════
+
+function updateChainCards() {
+  var area = document.getElementById('chains_area');
+  if (!area) return;
+  if (!chainsData.length) {
+    area.innerHTML = '<div class="ds-stat-card"><div class="ds-section-title">链路状态</div><p style="font-size:13px;color:var(--ds-text-muted);">暂无链路配置</p></div>';
+    return;
+  }
+  var active = findActiveChain();
+  var html = '';
+  for (var i = 0; i < chainsData.length; i++) {
+    html += renderChainCard(chainsData[i], active);
+  }
+  area.innerHTML = html;
+}
+
+function renderChainCard(c, active) {
+  var isRunning = statusData && statusData.status == 'running';
+  // 多链路并发模式: 所有 enabled=1 的链路在 sing-box 运行时都是"运行中"
+  // 三态：启用+sing-box运行=运行中(绿)，启用但sing-box未运行=已启用未开启(橙)，未启用=已禁用(灰)
+  var badgeClass, badgeText;
+  if (c.enabled && isRunning) {
+    badgeClass = 'ds-badge-green'; badgeText = '运行中';
+  } else if (c.enabled) {
+    badgeClass = 'ds-badge-brand'; badgeText = '已启用未开启';
+  } else {
+    badgeClass = 'ds-badge-gray'; badgeText = '已禁用';
+  }
+
+  var html = '<div class="ds-chain-card">';
+  html += '<div class="ds-chain-header">';
+  html += '<div>';
+  html += '<span class="ds-chain-name">' + esc(c.name) + '</span> ';
+  html += '<span class="ds-badge ' + badgeClass + '">' + badgeText + '</span>';
+  html += '<div class="ds-chain-meta">源IP: ' + esc(c.source_ip || '-') + '</div>';
+  var served = overviewSubnets.filter(function(s){ return s.chain_id == c.id; });
+  if (served.length) {
+    html += '<div class="ds-chain-meta">服务子网: ' + served.map(function(s){ return esc(s.name + ' (' + s.cidr + ')'); }).join(', ') + '</div>';
+  }
+  html += '</div>';
+  html += '<div class="ds-chain-actions">';
+  html += '<button class="ds-btn" onclick="speedTestChain(' + c.id + ', this)">⚡ 测速</button>';
+  if (c.enabled && isRunning) {
+    html += '<button class="ds-btn" disabled>运行中</button>';
+  } else {
+    html += '<button class="ds-btn primary" onclick="switchChain(' + c.id + ', this)">切换到此链路</button>';
+  }
+  html += '</div>';
+  html += '</div>';
+
+  var hops = c.hops || [];
+  html += '<div class="ds-hop-path">';
+  html += '<div class="ds-hop-node ds-hop-source">';
+  html += '<span class="ds-hop-flag">🏠</span>';
+  html += '<div>';
+  html += '<div class="ds-hop-name">本地网络</div>';
+  html += '<div class="ds-hop-ip">WAN: eth1 · LAN: br-lan (192.168.5.1)</div>';
+  html += '<div class="ds-hop-metrics">源IP: ' + esc(c.source_ip || '-') + '</div>';
+  html += '</div>';
+  html += '</div>';
+
+  for (var j = 0; j < hops.length; j++) {
+    html += '<div class="ds-hop-segment">';
+    var latKey = c.id + '_' + (j + 1);
+    var lat = latencies[latKey];
+    var latCls = lat ? (lat < 100 ? 'good' : (lat < 200 ? 'warn' : 'bad')) : 'muted';
+    var latVal = lat ? lat + 'ms' : '未测';
+    html += '<span class="ds-hop-latency ' + latCls + '">' + latVal + '</span>';
+    html += '<div class="ds-hop-line"></div>';
+    html += '</div>';
+
+    var hop = hops[j];
+    var roleIcon = hop.role == 'landing' ? '🏠' : '🔄';
+    var roleLabel = hop.role == 'landing' ? '落地' : '中转';
+    html += '<div class="ds-hop-node">';
+    html += '<span class="ds-hop-flag">' + roleIcon + '</span>';
+    html += '<div>';
+    html += '<div class="ds-hop-name">' + esc(hop.name) + ' <span style="font-size:10px;color:var(--ds-text-muted);">' + roleLabel + '</span></div>';
+    html += '<div class="ds-hop-ip">' + esc(hop.ip) + ' · ' + esc(hop.protocol || '?').toUpperCase() + '</div>';
+    html += '<div class="ds-hop-metrics" id="m_' + c.id + '_' + hop.id + '">-</div>';
+    html += '</div>';
+    html += '</div>';
+  }
+  html += '</div>';
+
+  html += '<div class="ds-metrics-bar">';
+  html += '<span>VPS 指标刷新：<b>' + metricsInterval + 's</b></span>';
+  html += '<span id="metrics_ts_' + c.id + '">最后更新：-</span>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+// ═══════════════════════════════════════════════════════
+//  VPS 指标轮询 + 刷新间隔
+// ═══════════════════════════════════════════════════════
+
+function setIntervalSec(sec) {
+  metricsInterval = sec;
+  var btns = document.querySelectorAll('.ds-interval-btn');
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].classList.toggle('active', btns[i].dataset.sec == sec);
+  }
+  try { localStorage.setItem('ds-metrics-interval', sec); } catch(e) {}
+  startMetricsPoll();
+}
+
+function startMetricsPoll() {
+  if (metricsTimer) { clearInterval(metricsTimer); metricsTimer = null; }
+  if (metricsInterval > 0) {
+    pollVpsMetrics();
+    metricsTimer = setInterval(pollVpsMetrics, metricsInterval * 1000);
+  }
+}
+
+function pollVpsMetrics() {
+  if (!chainsData.length) return;
+  if (!document.getElementById('chains_area')) return; // 不在仪表盘视图则跳过
+  var isRunning = statusData && statusData.status == 'running';
+  if (!isRunning) return; // 代理未运行时跳过 VPS 指标轮询
+  var now = new Date().toLocaleTimeString();
+
+  for (var c = 0; c < chainsData.length; c++) {
+    var chain = chainsData[c];
+    var hops = chain.hops || [];
+    for (var h = 0; h < hops.length; h++) {
+      var hop = hops[h];
+      if (!hop.ip || !hop.api_port) continue;
+      var metricsId = 'm_' + chain.id + '_' + hop.id;
+      var el = document.getElementById(metricsId);
+      if (!el) continue;
+      (function(el, hop, chainId) {
+        var url = 'http://' + hop.ip + ':' + hop.api_port + '/metrics';
+        fetch(url, {signal: AbortSignal.timeout(3000)})
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            var cpu = d.cpu || 0;
+            var rx = d.net ? (d.net.rx_mbps || '0.0') : '0.0';
+            var tx = d.net ? (d.net.tx_mbps || '0.0') : '0.0';
+            var mem = d.mem ? d.mem.pct : 0;
+            el.innerHTML = 'CPU ' + cpu + '% · ' + mem + '% mem · ↑' + tx + ' ↓' + rx + ' Mbps';
+          })
+          .catch(function() { el.textContent = '无法连接'; });
+      })(el, hop, chain.id);
+    }
+    var tsEl = document.getElementById('metrics_ts_' + chain.id);
+    if (tsEl) tsEl.textContent = '最后更新：' + now;
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  测速 & 切换 & 代理开关
+// ═══════════════════════════════════════════════════════
+
+function speedTestChain(chainId, btn) {
+  btn.textContent = '⏳ 测速中…';
+  btn.disabled = true;
+  fetchJson(DIAG_URL, {chain: chainId}).then(function(rv) {
+    btn.textContent = '⚡ 测速';
+    btn.disabled = false;
+    if (!rv || !rv.legs) return;
+    for (var j = 0; j < rv.legs.length; j++) {
+      var key = chainId + '_' + (rv.legs[j].segment);
+      latencies[key] = rv.legs[j].latency_ms || null;
+    }
+    updateChainCards();
+  }).catch(function(e) { btn.textContent = '⚡ 测速'; btn.disabled = false; });
+}
+
+// 修复 bug: 改用 chains_activate (互斥禁用其它) + on (重启生效)
+// 不再用 chains_apply (不互斥 + 重启)
+function switchChain(chainId, btn) {
+  if (!confirm('切换链路将重启代理，确认继续？')) return;
+  btn.textContent = '⏳ 切换中…';
+  btn.disabled = true;
+  postJson(ACTIVATE_URL, {id: chainId}).then(function(rv) {
+    if (!rv || rv.status != 'ok') {
+      btn.textContent = '切换到此链路';
+      btn.disabled = false;
+      alert('链路切换失败: ' + (rv && rv.message || '未知错误'));
+      return;
+    }
+    return fetchJson(ON_URL);
+  }).then(function(rv2) {
+    if (rv2) setTimeout(loadStatus, 2000);
+  }).catch(function(e) {
+    btn.textContent = '切换到此链路';
+    btn.disabled = false;
+    alert('切换失败: ' + e.message);
+  });
+}
+
+// 开启代理: 优先用链路选择器选中的值，其次用 enabled 链路，最后取第一条
+function proxyOn() {
+  var sel = document.getElementById('chain_select');
+  var chainId = sel ? sel.value : null;
+  if (!chainId) {
+    var active = findActiveChain();
+    chainId = active ? active.id : (chainsData.length ? chainsData[0].id : null);
+  }
+  if (!chainId) {
+    alert('没有可用的链路，请先添加链路');
+    return;
+  }
+  var btn = document.querySelector('#card-proxy .ds-btn.primary, .chb-btn-lg');
+  if (btn) { btn.textContent = '⏳ 开启中…'; btn.disabled = true; }
+
+  postJson(ACTIVATE_URL, {id: chainId}).then(function(rv) {
+    if (!rv || rv.status != 'ok') {
+      if (btn) { btn.textContent = '开启代理'; btn.disabled = false; }
+      alert('链路激活失败: ' + (rv && rv.message || '未知错误'));
+      return null;
+    }
+    return fetchJson(ON_URL);
+  }).then(function(rv2) {
+    if (!rv2) return;
+    if (rv2.status == 'running') {
+      loadStatus();
+    } else {
+      if (btn) { btn.textContent = '开启代理'; btn.disabled = false; }
+      alert('代理启动失败: ' + (rv2.status || '未知'));
+    }
+  }).catch(function(e) {
+    if (btn) { btn.textContent = '开启代理'; btn.disabled = false; }
+    alert('开启代理失败: ' + e.message);
+  });
+}
+
+// 关闭代理
+function proxyOff() {
+  var btn = document.querySelector('#card-proxy .ds-btn.primary');
+  if (btn) { btn.textContent = '⏳ 关闭中…'; btn.disabled = true; }
+  fetchJson(OFF_URL).then(function(rv) {
+    setTimeout(loadStatus, 1000);
+  }).catch(function(e) {
+    if (btn) { btn.textContent = '关闭代理'; btn.disabled = false; }
+    alert('关闭失败: ' + e.message);
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+//  底行 - 系统信息 + 网络
+// ═══════════════════════════════════════════════════════
+
+function updateSystemInfo(info) {
+  var cpuEl = document.getElementById('si_cpu');
+  if (cpuEl && info.cpuusage != null) {
+    var pct = parseInt(info.cpuusage) || 0;
+    cpuEl.innerHTML = pct + '%' +
+      '<span class="ds-progress"><span class="ds-progress-fill" style="width:' + pct + '%"></span></span>';
+  }
+  var uEl = document.getElementById('si_uptime');
+  if (uEl && info.uptime) uEl.textContent = formatUptime(parseInt(info.uptime));
+  var lEl = document.getElementById('si_load');
+  if (lEl) {
+    var load = info.load;
+    if (Array.isArray(load)) lEl.textContent = load.map(function(v){return parseFloat(v).toFixed(2);}).join(', ');
+    else if (info.loadavg) lEl.textContent = info.loadavg;
+  }
+  var mEl = document.getElementById('si_mem');
+  if (mEl && info.memory) {
+    var total = info.memory.total || 0;
+    var free = (info.memory.free || 0) + (info.memory.buffered || 0);
+    var used = total - free;
+    var used_mb = Math.round(used / 1048576);
+    var total_mb = Math.round(total / 1048576);
+    var pct = total > 0 ? Math.round(used / total * 100) : 0;
+    mEl.innerHTML = used_mb + ' MB / ' + total_mb + ' MB (' + pct + '%)' +
+      '<span class="ds-progress"><span class="ds-progress-fill" style="width:' + pct + '%"></span></span>';
+  }
+}
+
+function updateNetworkInfo(info) {
+  var el = document.getElementById('net_info');
+  if (!el) return;
+  var html = '<table class="ds-info-table">';
+  var wan = info.wan;
+  if (wan) {
+    html += '<tr><td class="key">WAN (' + esc(wan.ifname || '?') + ')</td>';
+    html += '<td class="val-mono">' + esc(wan.ipaddr || '-') + '</td></tr>';
+  }
+  var lan = info.lan;
+  if (lan) {
+    html += '<tr><td class="key">LAN (' + esc(lan.ifname || 'br-lan') + ')</td>';
+    html += '<td class="val-mono">' + esc(lan.ipaddr || '192.168.5.1') + '</td></tr>';
+  }
+  html += '<tr><td class="key">在线设备</td><td class="val">' + (info.users != null ? info.users : '-') + '</td></tr>';
+  html += '<tr><td class="key">活动连接</td><td class="val">' + (info.conncount != null ? info.conncount + ' / ' + info.connmax : '-') + '</td></tr>';
+  html += '</table>';
+  el.innerHTML = html;
+
+  var dhcpEl = document.getElementById('dhcp_section');
+  if (dhcpEl && info.leases && info.leases.length) {
+    var dh = '<div class="ds-section-title">DHCP 分配</div>';
+    dh += '<table class="ds-info-table">';
+    dh += '<tr><td class="key">主机名</td><td class="key">IP 地址</td><td class="key">MAC</td><td class="key">剩余租期</td></tr>';
+    for (var i = 0; i < Math.min(info.leases.length, 8); i++) {
+      var l = info.leases[i];
+      dh += '<tr>';
+      dh += '<td class="val" style="font-size:12px;">' + esc(l.hostname || '-') + '</td>';
+      dh += '<td class="val-mono" style="font-size:11px;">' + esc(l.ipaddr || '-') + '</td>';
+      dh += '<td class="val-mono" style="font-size:10px;">' + esc(l.macaddr || '-') + '</td>';
+      dh += '<td class="val" style="font-size:11px;">' + esc(l.leasetime || '-') + '</td>';
+      dh += '</tr>';
+    }
+    if (info.leases.length > 8) {
+      dh += '<tr><td colspan="4" class="val" style="font-size:12px;color:var(--ds-text-muted);">还有 ' + (info.leases.length - 8) + ' 条...</td></tr>';
+    }
+    dh += '</table>';
+    dhcpEl.innerHTML = dh;
+    dhcpEl.style.display = '';
+  } else if (dhcpEl) {
+    dhcpEl.style.display = 'none';
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+//  工具函数
+// ═══════════════════════════════════════════════════════
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function formatUptime(sec) {
+  if (!sec) return '-';
+  var d = Math.floor(sec / 86400);
+  var h = Math.floor((sec % 86400) / 3600);
+  var m = Math.floor((sec % 3600) / 60);
+  var parts = [];
+  if (d) parts.push(d + 'd');
+  if (h) parts.push(h + 'h');
+  parts.push(m + 'm');
+  return parts.join(' ');
+}
+
+// ── 从 localStorage 恢复间隔设置 ──
+try {
+  var saved = localStorage.getItem('ds-metrics-interval');
+  if (saved !== null) {
+    setIntervalSec(parseInt(saved));
+  }
+} catch(e) {}
+</script>
+<%+footer%>
