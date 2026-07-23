@@ -89,8 +89,12 @@ def chain_routing_rules(chain):
     end;
 
 # 汇总所有链路的分流规则
+# 最前面加一条全局规则: DNS 查询 (port 53) 强制走第一条 enabled 链路,
+# 避免手机原始 DNS 查询 (source 172.19.0.1) 不匹配 source_ip_cidr 走 direct 泄露
 def all_routing_rules:
-    [chains[] | chain_routing_rules(.) | .[]];
+    (chains | map(select(.enabled)) | .[0] | chain_final_tag(.)) as $first_chain_tag |
+    [{port: 53, outbound: $first_chain_tag}]
+    + [chains[] | chain_routing_rules(.) | .[]];
 
 # 组装完整配置
 {
