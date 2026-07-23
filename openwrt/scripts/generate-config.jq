@@ -101,8 +101,8 @@ def all_routing_rules:
         servers: [
             # 本地 DNS (走直连, 用于国内域名解析)
             { tag: "local-dns", address: "223.5.5.5", detour: "direct" },
-            # 远程 DNS (走直连, 用于国外域名解析, 避免 DNS 污染)
-            { tag: "proxy-dns", address: "8.8.8.8", detour: "direct" }
+            # 远程 DNS (走第一条链路的最终跳, 确保DNS查询不经CN出口, 避免DNS泄露)
+            { tag: "proxy-dns", address: "8.8.8.8", detour: (chains | map(select(.enabled)) | .[0] | chain_final_tag(.)) }
         ],
         rules: [
             # 国内域名用本地 DNS 解析 (快速)
