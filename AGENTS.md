@@ -57,3 +57,15 @@ rm -f /tmp/luci-indexcache
 - 修改前端/后端代码后，必须验证前后端数据一致性
 - 页面展示的数据必须与数据库实际数据对应
 - 不得有"页面显示了但数据库没有"的幽灵数据
+
+## sing-box 配置修改红线（强制）
+
+**修改 `generate-config.jq` 的 DNS / route 配置前，必读 [`docs/postmortem-2026-07-23-dns-disaster.md`](docs/postmortem-2026-07-23-dns-disaster.md)。**
+
+该文档记录了 2026-07-23 的 DNS 配置灾难事故：错误修改 DNS detour 导致 sing-box 崩溃、整个子网断联。以下红线不可违反：
+
+1. **`local-dns` (223.5.5.5) 的 `detour` 必须是 `direct`** — 这是 sing-box 启动的基础设施，走链路会导致循环依赖崩溃
+2. **不要加全局 `port: 53` 规则** — 会误伤 sing-box 自身 DNS 查询导致崩溃；如需拦截手机 DNS，用 `source_ip_cidr` 限定范围
+3. **DNS 走 direct ≠ 流量泄露** — DNS 查询走 CN 直连不影响后续 TCP/UDP 流量走链路
+4. **部署前先本地验证** — `jq` 语法通过不等于配置逻辑正确，必须模拟启动场景测试
+5. **一次只改一个东西** — 连续改多个配置项会雪崩式故障，无法定位根因
