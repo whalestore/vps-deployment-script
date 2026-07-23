@@ -103,8 +103,9 @@ def all_routing_rules:
         # strategy=ipv4_only: 只解析 A 记录, 避免 VPS 无 IPv6 上行时 AAAA 导致 no route to host
         strategy: "ipv4_only",
         servers: [
-            # 本地 DNS (走链路, 避免DNS查询走CN直连泄露)
-            { tag: "local-dns", address: "223.5.5.5", detour: (chains | map(select(.enabled)) | .[0] | chain_final_tag(.)) },
+            # 本地 DNS (走直连, 用于国内域名解析; 223.5.5.5 从国内直连最快)
+            # 手机原始 DNS 查询已被 route.rules 的 port 53 规则拦截走链路, 这里只处理 sing-box 内部 DNS
+            { tag: "local-dns", address: "223.5.5.5", detour: "direct" },
             # 远程 DNS (走链路最终跳, 确保DNS查询不经CN出口, 避免DNS泄露)
             { tag: "proxy-dns", address: "8.8.8.8", detour: (chains | map(select(.enabled)) | .[0] | chain_final_tag(.)) }
         ],
