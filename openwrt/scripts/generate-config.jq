@@ -89,12 +89,8 @@ def chain_routing_rules(chain):
     end;
 
 # 汇总所有链路的分流规则
-# 最前面加一条全局规则: DNS 查询 (port 53) 强制走第一条 enabled 链路,
-# 避免手机原始 DNS 查询 (source 172.19.0.1) 不匹配 source_ip_cidr 走 direct 泄露
 def all_routing_rules:
-    (chains | map(select(.enabled)) | .[0] | chain_final_tag(.)) as $first_chain_tag |
-    [{port: 53, outbound: $first_chain_tag}]
-    + [chains[] | chain_routing_rules(.) | .[]];
+    [chains[] | chain_routing_rules(.) | .[]];
 
 # 组装完整配置
 {
@@ -103,11 +99,10 @@ def all_routing_rules:
         # strategy=ipv4_only: 只解析 A 记录, 避免 VPS 无 IPv6 上行时 AAAA 导致 no route to host
         strategy: "ipv4_only",
         servers: [
-            # 本地 DNS (走直连, 用于国内域名解析; 223.5.5.5 从国内直连最快)
-            # 手机原始 DNS 查询已被 route.rules 的 port 53 规则拦截走链路, 这里只处理 sing-box 内部 DNS
+            # 本地 DNS (走直连, 用于国内域名解析)
             { tag: "local-dns", address: "223.5.5.5", detour: "direct" },
-            # 远程 DNS (走链路最终跳, 确保DNS查询不经CN出口, 避免DNS泄露)
-            { tag: "proxy-dns", address: "8.8.8.8", detour: (chains | map(select(.enabled)) | .[0] | chain_final_tag(.)) }
+            # 远程 DNS (走直连, 用于国外域名解析, 避免 DNS 污染)
+            { tag: "proxy-dns", address: "8.8.8.8", detour: "direct" }
         ],
         rules: [
             # 国内域名用本地 DNS 解析 (快速)
