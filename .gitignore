@@ -26,5 +26,8 @@ package-lock.json
 *.swp
 *.swo
 
+# Local Git worktrees
+.worktrees/
+
 # macOS
 .DS_Store
