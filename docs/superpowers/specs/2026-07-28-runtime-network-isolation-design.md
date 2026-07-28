@@ -6,7 +6,7 @@
 >
 > 适用范围：单 WAN/单 LAN 为主、可外接中继路由器或交换机的 x86 OpenWrt 跨境播软路由
 >
-> 核心结论：管理面使用不占物理 LAN 的 `wg-mgmt`；基础网络不依赖 sing-box；业务面采用单 sing-box；配置通过候选生成、验证、原子切换和健康回滚生效；业务失败时 fail-closed，管理面继续可达。
+> 核心结论：国内总部与设备之间使用内核 `wg-mgmt` 管理隧道；WireGuard 不进入任何海外节点或业务链路。基础网络不依赖 sing-box，业务面继续使用现有单 sing-box；配置由一个非驻留脚本完成候选生成、验证、原子切换和回滚；业务失败时 fail-closed，管理面继续可达。
 
 ## 1. 事故结论与调研复核
 
@@ -44,6 +44,8 @@
 6. 路由器自身启动、时间同步、WireGuard、升级和规则加载不依赖 sing-box 业务链路。
 7. 配置修改必须是事务：全部验证成功才生效，失败恢复上一已知良好版本。
 8. LuCI 展示必须区分“用户想要的配置”和“设备实际运行的配置”，不产生幽灵数据。
+9. WireGuard 只连接国内总部管理中心，不允许海外 VPS 成为 WireGuard peer，也不允许业务流量、客户端 DNS 或 VLESS 出站绕入 `wg-mgmt`。
+10. 本设计包含应用代码/配置的远程升级与回滚，但不包含 x86 工厂刷机和 OpenWrt 基础固件 OTA；待运行时架构完成并验证后再回顾工厂方案。
 
 ## 3. 五个平面
 
@@ -58,7 +60,7 @@ flowchart TB
     end
 
     subgraph MGMT["② 管理平面：不进 sing-box"]
-        WG["wg-mgmt<br/>每设备唯一 /32"]
+        WG["内核 wg-mgmt<br/>国内总部 peer<br/>每设备唯一 /32"]
         SSH["Dropbear / SSH"]
         LUCI["LuCI / uhttpd"]
         OTA["固定升级器"]
@@ -66,8 +68,8 @@ flowchart TB
 
     subgraph CONTROL["③ 配置控制平面"]
         DESIRED["用户期望状态<br/>vps.db + policies"]
-        APPLY["单一 apply-manager<br/>锁、生成、检查、切换、回滚"]
-        LKG["last-known-good<br/>数据与运行配置快照"]
+        APPLY["chb-apply-config.sh<br/>非驻留脚本<br/>锁、生成、检查、切换、回滚"]
+        LKG["active + last-good<br/>两份运行配置"]
     end
 
     subgraph DATA["④ 业务数据平面"]
@@ -82,7 +84,7 @@ flowchart TB
         TDNS["专用 TUN DNS 地址"]
         FAKE["FakeIP"]
         LOCAL["local-dns<br/>223.5.5.5 direct"]
-        CHDNS["按链路的代理 DNS<br/>只处理必要非 A/AAAA"]
+        CHDNS["按链路的代理 DNS<br/>后续 DNS 阶段验证"]
     end
 
     WAN --> NETIFD --> FW
@@ -116,15 +118,22 @@ flowchart TB
 升级器 → 通过业务 TUN 才能访问 GitHub
 ```
 
-## 4. 管理网络：不用管理 VLAN，不占 LAN 口
+这里的“五个平面”是依赖边界，不是五个新服务。最终实现继续复用 netifd、dnsmasq、firewall4、procd、LuCI、SQLite 和单 sing-box；第一批只增加：
+
+1. 一个由 OpenWrt 内核 WireGuard 驱动承载的 `wg-mgmt` 接口；
+2. 一个执行完即退出的 `/usr/bin/chb-apply-config` 脚本。
+
+不新增常驻 apply-manager、第二个 DNS 服务、第二个 sing-box、指标采集 daemon 或自定义 WireGuard 用户态服务。
+
+## 4. 国内总部管理网络：不用管理 VLAN，不占 LAN 口
 
 ### 4.1 推荐拓扑
 
 ```mermaid
 flowchart LR
-    subgraph HQ["总部"]
+    subgraph HQ["国内总部"]
         OPS["运维电脑<br/>SSH / 浏览器"]
-        HUB["WireGuard 中心<br/>公网可达"]
+        HUB["内核 WireGuard 中心<br/>国内固定公网 IPv4"]
         OPS --> HUB
     end
 
@@ -158,14 +167,37 @@ flowchart LR
 - 设备在 NAT 后也能主动连接总部；
 - 总部使用固定管理 IP，不依赖现场 WAN 地址变化。
 
-### 4.2 路由隔离
+### 4.2 WireGuard 使用边界
+
+WireGuard 在本系统中只有“国内远程管理”一个职责：
+
+```text
+国内总部运维机
+  → 国内 WireGuard 中心
+  → 设备 wg-mgmt /32
+  → SSH / LuCI / 升级命令
+```
+
+强制限制：
+
+- 设备使用 OpenWrt 内核 WireGuard，不使用 sing-box WireGuard outbound/endpoint；
+- Hub 必须部署在国内，不得把日本、美国或其他海外 VPS 配成 WireGuard peer；
+- 总部运维机作为 Hub 的独立 ops peer，Hub 只转发 ops 管理池到设备 `/32`；设备只信任 Hub 公钥，不和每台运维机或其他设备组成 mesh；
+- 设备端 `AllowedIPs` 只包含总部管理地址段，例如 `10.254.0.0/16`，禁止 `0.0.0.0/0` 和 `::/0`；
+- Hub 为每台设备只声明该设备唯一的 `/32` 管理地址；
+- WireGuard endpoint 使用国内固定 IPv4，避免隧道启动再依赖代理 DNS；
+- `mgmt` zone 只允许到设备本机 SSH/LuCI/升级接口，`forward` 永久 REJECT；
+- VLESS 节点、客户端 DNS、生产 LAN 和 sing-box direct outbound 都不得引用 `wg-mgmt`；
+- GitHub Release 下载仍绑定基础 WAN 直连；管理隧道只传输升级命令和状态。
+
+### 4.3 路由隔离
 
 管理隧道必须明确绕开 sing-box：
 
 1. WireGuard 公网 endpoint 的主机路由固定走 WAN 网关；
-2. `wg-mgmt` 使用独立路由规则/表，优先级高于 sing-box TUN 规则；
-3. sing-box TUN 明确排除 `wg-mgmt`、WireGuard endpoint 和管理地址段；
-4. 升级器绑定 WAN 或管理表访问 GitHub Release；
+2. sing-box TUN 优先通过生产入口白名单只捕获 `prod`，并明确排除 `wg-mgmt`、WireGuard endpoint 和总部管理地址段；
+3. 升级器绑定 WAN 访问 GitHub Release；
+4. 默认不增加独立管理策略路由表；只有实机 `ip route`、nft trace 证明上述原生路由仍被 TUN 捕获时，才增加专用规则表；
 5. firewall4 禁止生产 LAN 进入 `mgmt` zone；
 6. SSH、LuCI 只监听 `wg-mgmt` 地址，WAN 和生产 LAN 默认不监听。
 
@@ -173,7 +205,7 @@ flowchart LR
 flowchart TD
     PKT["本机发出数据包"]
     ISWG{"目标是总部管理网<br/>或 WireGuard endpoint？"}
-    MGRT["管理规则表<br/>经 WAN / wg-mgmt"]
+    MGRT["WAN endpoint 主机路由<br/>或 wg-mgmt 直连路由"]
     ISOTA{"升级器进程<br/>或签名发布地址？"}
     WANRT["基础 WAN 直连"]
     ISLAN{"来自生产 LAN？"}
@@ -189,12 +221,12 @@ flowchart TD
     ISLAN -->|否| LOCAL
 ```
 
-### 4.3 防火墙 zone
+### 4.4 防火墙 zone
 
 | Zone | 接口 | input | output | forward | 用途 |
 |---|---|---:|---:|---:|---|
 | `wan` | 物理 WAN | REJECT | ACCEPT | REJECT | 基础互联网 |
-| `mgmt` | `wg-mgmt` | 仅总部允许 | ACCEPT | 默认 REJECT | SSH、LuCI、升级 |
+| `mgmt` | `wg-mgmt` | 仅国内总部允许 | ACCEPT | REJECT | SSH、LuCI、升级命令 |
 | `prod` | 业务 LAN/VLAN | 仅 DHCP、必要 ICMP；DNS 先 scoped DNAT | ACCEPT | 默认 REJECT | 终端接入 |
 | `tun` | `singbox-tun` | REJECT | ACCEPT | 受控 | sing-box 业务数据 |
 
@@ -204,12 +236,14 @@ flowchart TD
 - 只允许生产流量进入 sing-box 捕获路径；
 - 生产入口的 TCP/UDP 53 在进入本机 dnsmasq 前定向改写到专用 TUN DNS 地址，dnsmasq 只承担 DHCP 和路由器 bootstrap 解析；
 - 允许 sing-box 自身按配置访问 WAN/VLESS；
-- `mgmt` 不转发到 `prod`，总部若要诊断终端必须使用明确、临时、可审计的规则；
+- `mgmt` 不转发到 `prod`、`wan` 或海外 VPS；总部只访问设备本机管理服务；
 - 路由器本机 direct 与生产终端 direct 必须可区分，不能用一个宽泛源地址规则。
 
 ## 5. 单物理 LAN 的三种业务接法
 
 管理面始终使用 `wg-mgmt`，以下差别只影响业务终端如何分组。
+
+三种模式是部署 profile，不是运行时自动切换引擎。每台设备只启用一种明确 profile；默认单 WAN/单 LAN 镜像不动态发现网口、拆桥或运行 `init-subnets.sh`。
 
 ### 5.1 模式 A：非网管交换机或 AP/中继桥接
 
@@ -260,7 +294,7 @@ flowchart LR
 
 1. 下游路由器工作在 NAT/路由模式，不是 AP 桥接模式；
 2. OpenWrt 根据下游 WAN MAC 分配固定 IP；
-3. 数据库把该固定源 IP 绑定到链路；
+3. 复用现有 `chains.source_cidr=<固定IP>/32`、`ap_ip` 和 `ap_mac` 绑定链路，不新增“终端组”数据表；
 4. 未登记或 IP/MAC 不一致的设备 fail-closed；
 5. 每个下游路由器内部终端被 NAT 聚合成一个可识别源地址。
 
@@ -277,7 +311,7 @@ flowchart LR
 - 一个下游路由器内的所有终端默认使用同一链路；
 - DHCP 固定租约和数据库绑定必须一致，否则应阻断而不是回落直连。
 
-这是当前“一个 LAN 口 + 普通交换机 + 多组业务”最实用的方案。
+这是当前“一个 LAN 口 + 普通交换机 + 多组业务”最实用的方案。它是运营分组，不是对抗恶意终端的安全边界；需要可信隔离时必须使用 VLAN 模式。
 
 ### 5.3 模式 C：网管交换机或支持 VLAN 的 AP
 
@@ -303,7 +337,7 @@ flowchart LR
     V30 -.-> PC
 ```
 
-这是隔离能力最强的接法。LAN 口承载多个业务 VLAN，但管理网仍然不放在这些 VLAN 中，依旧走 `wg-mgmt`。
+这是隔离能力最强的接法。LAN 口承载多个业务 VLAN，但管理网仍然不放在这些 VLAN 中，依旧走 `wg-mgmt`。VLAN profile 由确定性 UCI 模板创建，不复用当前按物理口动态拆网逻辑。
 
 ### 5.4 选择表
 
@@ -363,22 +397,22 @@ flowchart LR
 - 不需要为每个子网维护一套进程、端口、日志和启动顺序；
 - 当前业务规模下，进程隔离带来的复杂度大于收益。
 
-若未来实测单进程达到 CPU、内存或文件描述符瓶颈，再按测量结果拆实例；不能为了“看起来隔离”预先复制多个 sing-box。
+当前系统本来就是单 sing-box，因此“单实例”是保留决策，不计作性能优化。性能改善来自缩小 TUN 捕获范围、减少 debug 日志、取消固定 sleep、使用本地 rule-set，并在实测后决定是否启用 sing-box 原生 `auto_redirect`。若未来实测单进程达到 CPU、内存或文件描述符瓶颈，再按测量结果拆实例。
 
 ### 6.2 fail-closed
 
 ```mermaid
 stateDiagram-v2
     [*] --> HEALTHY
-    HEALTHY --> BUSINESS_BLOCKED: sing-box 退出、TUN 消失或健康失败
-    BUSINESS_BLOCKED --> HEALTHY: last-known-good 恢复成功
-    BUSINESS_BLOCKED --> SAFE_MODE: 自动恢复连续失败
-    SAFE_MODE --> HEALTHY: 总部通过 wg-mgmt 修复并显式应用
+    HEALTHY --> RESTARTING: sing-box 意外退出
+    RESTARTING --> HEALTHY: procd 有限重启成功
+    RESTARTING --> SAFE_MODE: 有限次数重启仍失败
+    SAFE_MODE --> HEALTHY: 总部通过 wg-mgmt 显式回滚或应用
 
     state HEALTHY {
         [*] --> ProxyAndAllowedDirect
     }
-    state BUSINESS_BLOCKED {
+    state RESTARTING {
         [*] --> NoProdToWanFallback
     }
     state SAFE_MODE {
@@ -391,12 +425,21 @@ sing-box 失败时：
 - 生产终端不能上网，避免流量泄漏；
 - `prod -> wan` 没有兜底转发；
 - WAN、WireGuard、SSH、LuCI、升级器保持正常；
-- apply-manager 尝试恢复 last-known-good；
-- 连续失败后进入 safe mode，停止自动反复重启，由总部处理。
+- 本次 apply 健康门禁失败时，`chb-apply-config` 自动恢复 last-good；
+- 已经运行的 sing-box 意外退出时，procd 只做有限次数重启；连续失败后进入 safe mode，由总部执行 `chb-apply-config --rollback` 或修复后重新应用。
 
 这是“业务暂时不可用但数据不泄漏、设备仍可修复”，而不是“为了不断网自动直连”。
 
+这会改变现有 UI 语义：当前“解绑链路”“禁用链路”“关闭代理”会回落 direct；新架构中三者都必须显示“业务已阻断”。默认不提供直连兜底。若现场以后确实需要维护直连，只能增加由国内总部显式授权、带失效时间并记录审计日志的 maintenance-direct，不能通过普通解绑隐式开启。
+
 ## 7. 客户端 DNS 设计
+
+本节描述最终目标，不在第一批升级中一次性启用。DNS 分两次独立发布：
+
+1. 先建立 scoped DNS capture 与显式 `hijack-dns`，但保持当前解析策略，证明路由器自身 DNS 不被误伤；
+2. 再在单独金丝雀版本启用 FakeIP，并验证 A/AAAA、HTTPS RR、QUIC、STUN、私有域名和缓存行为。
+
+DNS 阶段不同时升级 sing-box 大版本。运行时隔离首先固定现有 1.11.5；若后续选择新版本，版本迁移和 FakeIP 行为变更必须拆成不同发布。
 
 ### 7.1 两条完全分离的 DNS 路径
 
@@ -488,12 +531,12 @@ sequenceDiagram
 - 对 QUIC、ECH 等场景不能只依赖 SNI sniff，FakeIP 映射是主路径；
 - 不能承诺在未知加密 DNS 服务不断变化时仅靠路由器规则做到永久、百分之百识别。
 
-## 8. 本地规则集与启动依赖
+## 8. 本地规则集、应用发布与启动依赖
 
 当前远程 rule-set 可能在 sing-box 启动时访问 CDN。新架构把生产规则集作为应用 Release 的签名内容随包下发：
 
 ```text
-/run/tiktokproxy/current/rules/
+/data/tiktokproxy/current/rules/
   geosite-cn.srs
   geoip-cn.srs
   policy-*.srs
@@ -512,59 +555,75 @@ sequenceDiagram
 
 运行时 sing-box 不把“首次下载远程规则集成功”作为启动前提。规则更新走统一应用发布流程，不在每台设备上自行漂移。
 
-## 9. 事务化配置应用
+应用升级复用 `docs/superpowers/specs/2026-07-28-x86-factory-image-and-updater-design.md` 中的“不可变版本目录 + 原子 current 链接 + 用户数据独立”模型，但本阶段只落地应用升级，不落地工厂盘、磁盘重分区或基础固件 A/B：
+
+```text
+/data/tiktokproxy/
+  releases/app-vX.Y.Z/           # 只读应用代码、LuCI、脚本、本地规则集
+  current -> releases/app-vX.Y.Z # 原子切换
+  state/                         # vps.db、policies，发布包禁止包含
+  runtime/                       # active、last-good、状态哈希
+  backups/<upgrade_id>/          # 仅 schema 迁移前创建，有界保留
+```
+
+设备端应用升级器和总部批量脚本都执行完即退出，不新增常驻发布服务。`chb-update`、`chb-mgmt` 和 sing-box procd 脚本属于固定基础层，普通应用 Release 不得覆盖它们；当前开发阶段通过版本化 Git 部署一次，未来由工厂镜像固化。
+
+设备只接受精确、已签名的 GitHub Release；先下载和验签，再在数据库副本执行兼容迁移、生成候选配置并调用 `chb-apply-config`，最后原子切换 `current`。任一步失败都保持旧应用和原用户数据；切换后本地健康失败则同时恢复旧链接、数据库及 policies 快照。发布包必须拒绝携带固定基础层、`state/`、`runtime/`、`backups/`，升级器不得递归删除 `/data/tiktokproxy`。
+
+总部只通过国内 `wg-mgmt` 发送精确版本的预检和升级命令；设备经基础 WAN 下载 GitHub Release。发布顺序固定为“全量预检 → 单机金丝雀 → 观察 → 小批量 → 扩大”，任一波超过失败阈值立即停止，不追求所有设备同秒更新。
+
+## 9. 最小事务化配置应用
 
 ### 9.1 数据状态
 
 | 状态 | 含义 | LuCI 展示 |
 |---|---|---|
-| `desired_generation` | 用户最近一次保存的期望配置版本 | “待应用”或“应用中” |
-| `applied_generation` | 当前 sing-box 实际运行且健康的版本 | “运行中” |
-| `last_good_generation` | 最近一次可恢复的健康版本 | “可回滚” |
-| `failed_generation` | 最近失败候选及原因 | “应用失败” |
+| `desired_hash` | 当前 vps.db 与 policies 一致性快照的 SHA-256 | “待应用”或“应用中” |
+| `applied_hash` | 当前 sing-box 实际运行配置对应的期望状态哈希 | “运行中” |
+| `last_good_hash` | 最近一次可恢复的本地健康配置哈希 | “可回滚” |
+| `last_error` | 最近一次失败阶段和精确错误 | “应用失败” |
 
-只有 `applied_generation == desired_generation` 时，页面才能显示“已生效”。保存数据库成功但运行配置失败时，不能把候选数据伪装成当前运行状态。
+只有 `applied_hash == desired_hash` 时，页面才能显示“已生效”。保存数据库成功但运行配置失败时，用户期望数据保留为“待应用”，运行时继续使用 last-good；普通配置失败不回滚或删除用户数据库。数据库备份只用于应用升级/schema 迁移，不在每次路由配置应用时复制整套历史。
 
 ### 9.2 单一写入口
 
-LuCI、命令行和升级迁移都不能各自直接重启 sing-box。它们只提交候选变更，由唯一 `apply-manager` 串行处理：
+LuCI、命令行和升级迁移都不能各自直接重启 sing-box。它们只调用唯一的 `/usr/bin/chb-apply-config`。该脚本获取锁、执行一次事务后退出，不是常驻 daemon：
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant UI as LuCI / CLI
     participant DB as desired state
-    participant A as apply-manager
+    participant A as chb-apply-config
     participant C as 候选目录
     participant S as sing-box
     participant H as 健康检查
     participant L as last-known-good
 
-    UI->>DB: 开启数据库事务，写候选状态
-    DB-->>UI: 返回 desired_generation
-    UI->>A: 请求应用 generation
+    UI->>DB: SQLite 事务或同目录 rename<br/>保存用户期望状态
+    DB-->>UI: 写入成功
+    UI->>A: 请求 apply
     A->>A: 获取全局 apply 锁
-    A->>DB: 读取一致性快照
+    A->>DB: SQLite backup + policies 快照<br/>计算 desired_hash
     A->>C: 生成 candidate config/rules
     A->>C: 校验 JSON、schema、CIDR、链路引用和不变量
     A->>S: sing-box check candidate
     alt 候选非法
-        A->>DB: 记录 failed_generation，不改变 applied
+        A->>DB: 记录 last_error，不改变 applied_hash
         A-->>UI: FAILED + 精确错误
     else 候选合法
-        A->>L: 快照当前运行配置、应用指针和数据版本
+        A->>L: 保留当前 active 为 last-good
         A->>C: 原子替换 active config
         A->>S: 受控重启单实例
-        A->>H: 检查进程、TUN、DNS、链路和管理面
+        A->>H: 只执行本地门禁检查<br/>进程、TUN、路由、本地 DNS
         alt 健康
-            A->>DB: applied_generation = desired_generation
-            A->>L: 标记新 generation 为 last-good
+            A->>DB: applied_hash = desired_hash
             A-->>UI: APPLIED
         else 不健康
-            A->>L: 恢复旧 active config 和必要数据
+            A->>L: 恢复旧 active config
             A->>S: 启动 last-known-good
             A->>H: 再次健康检查
-            A->>DB: 记录 ROLLED_BACK 和原因
+            A->>DB: 记录 last_error 和 ROLLED_BACK
             A-->>UI: ROLLED_BACK
         end
     end
@@ -573,7 +632,7 @@ sequenceDiagram
 
 ### 9.3 候选不变量
 
-除 `jq`/JSON 语法和 `sing-box check` 外，apply-manager 还必须验证：
+除 `jq`/JSON 语法和 `sing-box check` 外，`chb-apply-config` 还必须验证：
 
 1. 每个启用链路至少有一个有效 hop；
 2. 每个业务来源最多绑定一个默认链路；
@@ -592,50 +651,74 @@ sequenceDiagram
 
 ```text
 /data/tiktokproxy/state/
-  vps.db                         # 用户期望状态与 generation
+  vps.db                         # 用户期望状态
   policies/                      # 用户策略
 
 /data/tiktokproxy/runtime/
-  candidate/<generation>/        # 候选配置和验证日志
-  active -> generations/<id>/    # 当前运行配置
-  last-good -> generations/<id>/ # 最近健康配置
-  generations/<id>/              # 不可变生成结果
-  apply.lock                     # 单一应用锁
+  active/                        # 当前运行配置
+  last-good/                     # 上一个本地健康配置
+  state.json                     # desired/applied/last-good hash + last_error
+
+/data/tiktokproxy/runtime/.apply.<apply_id>/
+  vps.db                         # SQLite 一致性快照
+  policies/                      # 策略快照
+  config.json                    # 候选配置
+  validation.log                # 本次临时验证日志
 ```
 
-sing-box init 脚本只读取 `runtime/active/config.json`。`generate-config.sh` 只能写 candidate，不能直接写 active；这消除“生成到一半就覆盖生产配置”的窗口。
+`/var/lock/chb-config.lock` 只串行化 apply，避免引入通用事务服务。用户期望数据分别使用 SQLite 事务或同目录临时文件 rename 原子写入；apply 在持锁后对数据库和 policies 取一致性候选快照。若 apply 期间又发生期望写入，运行配置仍对应本次快照，结束时重新计算的 `desired_hash` 会与 `applied_hash` 不同，LuCI 继续显示“待应用”，不会把旧快照误报为最新状态。
+
+sing-box init 脚本只读取 `runtime/active/config.json`。`generate-config.sh` 必须接受显式输入和输出路径，只能写临时候选目录。候选验证后在 DATA 同一文件系统内用 rename 原子替换配置文件；切换前先把旧 active 原子更新为 last-good，健康失败再恢复。成功或失败后删除 `.apply.<apply_id>`。只保留两份运行配置，避免无限 generation 历史和 DATA 空间增长。
 
 ## 11. 健康检查与可观测性
 
-### 11.1 基础健康
+### 11.1 同步发布门禁
+
+以下检查失败才触发配置回滚：
 
 - WAN 地址和默认路由存在；
-- 指定 direct 探测地址可达；
-- `wg-mgmt` handshake 在阈值内；
-- SSH 与 LuCI 只在管理地址监听；
 - DATA 可读写且数据库 `integrity_check` 通过；
-- 系统时间可信。
-
-### 11.2 业务健康
-
 - sing-box 进程存在且 PID 稳定；
 - `singbox-tun` 地址、路由和防火墙规则存在；
-- 专用客户端 DNS 地址可对测试域名响应；
-- CN 测试域名返回真实 IP并命中 direct；
-- 代理测试域名返回 FakeIP；
-- 每条启用链路完成受控 TCP/HTTPS 探测；
 - 未登记源地址无法通过 WAN；
-- sing-box 停止后管理面仍可访问。
+- 路由器本机到国内总部 WireGuard endpoint 的路由仍指向 WAN；
+- 当前阶段所需的本地 DNS 自检通过。
 
-### 11.3 日志与状态
+### 11.2 异步运行健康
+
+以下结果用于显示 `healthy/degraded/down`，不因互联网或海外 VPS 临时抖动自动回滚本地配置：
+
+- `wg-mgmt` 最近 handshake；
+- 国内 direct 探测；
+- 每条启用 VLESS 链路的 TCP/HTTPS 探测；
+- CN 测试域名的真实 IP；
+- DNS 阶段启用后的代理域名 FakeIP；
+- SSH/LuCI 监听面和生产 LAN 隔离状态。
+
+### 11.3 性能预算
+
+新版本必须和同一台硬件、同一条网络、同一组 VPS 的当前版本做 A/B：
+
+| 指标 | 发布门槛 |
+|---|---|
+| direct、单跳、双跳吞吐 | 任一场景下降不超过 5% |
+| 相同吞吐下 CPU | 增幅不超过 10% |
+| sing-box RSS | 增幅不超过 15% |
+| 配置应用业务中断 | 目标不超过 3 秒，取消固定 sleep |
+| 状态 API 本地响应 | p95 不超过 300 ms，不同步请求公网 |
+| 24 小时稳定性 | 无内存持续增长、日志无限增长、路由漂移 |
+
+`auto_redirect` 只有在基准证明吞吐或 CPU 优于当前 `auto_route` 且 firewall4 重载兼容时才启用；否则保留当前模式并仅缩小捕获入口。
+
+### 11.4 日志与状态
 
 每次配置应用记录：
 
 ```text
 apply_id
 device_id
-desired_generation
-previous_applied_generation
+desired_hash
+previous_applied_hash
 candidate_hash
 initiator
 start_at / finish_at
@@ -648,12 +731,14 @@ error_summary
 
 日志有大小和保留期上限，敏感字段如 UUID、私钥和完整节点凭据必须脱敏。
 
+生产 sing-box 日志默认使用 `info`。`debug` 只能通过有时限的诊断开关启用；流量页面不得在每次请求时扫描完整 sing-box 日志，公网出口 IP和链路健康结果必须异步缓存。
+
 ## 12. 关键数据流示例
 
 ### 12.1 总部 SSH
 
 ```text
-总部运维机
+国内总部运维机
   → 总部 WireGuard 中心
   → 设备 wg-mgmt /32
   → mgmt zone
@@ -665,7 +750,7 @@ error_summary
 ### 12.2 GitHub 应用升级
 
 ```text
-总部通过 wg-mgmt 发升级命令
+国内总部通过 wg-mgmt 发升级命令
   → 设备固定升级器绑定 WAN
   → 下载精确 GitHub Release
   → 验签、暂存、候选检查
@@ -691,7 +776,7 @@ error_summary
 ```text
 sing-box 退出
   → 生产流量因无 prod→wan 转发而被阻断
-  → watchdog/apply-manager 尝试 last-known-good
+  → procd 按有限次数重启；本次 apply 失败则恢复 last-good
   → wg-mgmt、SSH、LuCI、升级器继续工作
   → 总部仍可诊断或回滚
 ```
@@ -704,7 +789,11 @@ sing-box 退出
 - 设备经过上级 NAT 后仍可被总部稳定 SSH；
 - 断开 sing-box、删除 TUN、配置无效三种场景下管理隧道都保持；
 - 生产 LAN 扫描不到 SSH/LuCI；
-- WireGuard endpoint 地址变化或 DNS 失败时有可观察错误，不把流量送入业务链路。
+- 国内固定 WireGuard endpoint 不可达时有可观察错误，不把流量送入业务链路；
+- `wg show` 中只存在国内总部 peer，海外 VPS 地址不出现在 WireGuard 配置；
+- 设备 `AllowedIPs` 不包含默认路由，`mgmt` zone 没有 forward；
+- 对日本/美国 VPS 执行 `ip route get` 时输出接口是 WAN，不是 `wg-mgmt`；
+- 生产流量压测期间 WireGuard 计数器只出现管理心跳和管理操作，不随业务吞吐增长。
 
 ### 13.2 三种 LAN 模式
 
@@ -728,42 +817,84 @@ sing-box 退出
 - 候选 JSON 错误、引用不存在、全局 53、错误 DNS detour 都在重启前被拒绝；
 - `sing-box check` 失败时 active 不变；
 - 新配置启动后健康失败时恢复 last-known-good；
-- LuCI 始终同时显示 desired 与 applied generation；
+- LuCI 始终同时显示 desired 与 applied hash；
 - apply 过程中断电后，启动脚本只选择完整 active 或 last-good，不读取半成品。
+
+### 13.5 性能
+
+- 保存升级前 direct、单跳、双跳的吞吐、CPU、RSS、DNS p50/p95 和状态 API p95；
+- 每个阶段在同硬件重复同一测试，超过性能预算立即停止扩散；
+- `auto_route` 与 `auto_redirect` 使用相同配置分别预热后测试至少三轮，按中位数决策；
+- 打开和关闭 LuCI 状态页时，业务吞吐不应出现可测量下降；
+- 生产日志保持 `info` 运行 24 小时，验证日志文件和 flash 写入有界。
 
 ## 14. 迁移顺序
 
 ```mermaid
 flowchart TD
-    M1["1. 先建立 wg-mgmt 与基础路由排除<br/>确认 sing-box 挂掉仍可管理"]
-    M2["2. 固化 prod/wan/mgmt/tun 防火墙<br/>建立 fail-closed"]
-    M3["3. 引入 candidate/active/last-good<br/>所有修改统一走 apply-manager"]
-    M4["4. 将远程 rule-set 改为发布包内本地文件"]
-    M5["5. 建立专用客户端 DNS 地址与限定捕获<br/>先保持现有解析策略"]
-    M6["6. 在金丝雀上启用 FakeIP<br/>抓包验证 A/AAAA、QUIC、UDP"]
-    M7["7. 扩展到下游 NAT 分组和 VLAN 模式"]
-    M8["8. 接入总部批量发布"]
-    M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7 --> M8
+    M0["0. 补齐运行资产和测试<br/>冻结 1.11.5，采集现网性能基线"]
+    M1["1. 建立国内总部 wg-mgmt<br/>业务路径完全不变"]
+    M2["2. 引入最小 chb-apply-config<br/>active/last-good + 本地 rule-set"]
+    M3["3. 固化 fail-closed<br/>同步修改关闭/解绑/禁用语义"]
+    M4["4. A/B 测试 auto_route 与 auto_redirect<br/>性能更优才切换"]
+    M5["5. 上线 scoped DNS hijack<br/>保持现有解析策略"]
+    M6["6. 独立金丝雀启用 FakeIP<br/>不同时升级 sing-box"]
+    M7["7. 接入应用远程升级与分批发布<br/>保护用户数据并可回滚"]
+    M8["8. 扩展下游 NAT 分组和 VLAN profile<br/>小批量到全量"]
+    M0 --> M1 --> M2 --> M3 --> M4 --> M5 --> M6 --> M7 --> M8
 ```
 
 DNS 改造不是第一步。先把管理面和自动回滚建立起来，才有资格修改可能导致业务断联的 DNS/TUN 配置。
+
+每个阶段都必须形成独立可运行版本、独立测试证据和回滚点，禁止把相邻阶段合并成一次全网发布。x86 工厂刷机和 OpenWrt 基础固件 OTA 在 M0-M8 全部开发并完成实机验证后重新评审，不在本计划中并行推进。
 
 ## 15. 设计决策摘要
 
 | 问题 | 决策 | 原因 |
 |---|---|---|
-| 管理口是否使用 LAN VLAN | 否，使用 `wg-mgmt` | 不占物理 LAN，不依赖现场交换机 |
+| 管理口是否使用 LAN VLAN | 否，使用国内总部内核 `wg-mgmt` | 不占物理 LAN，不依赖现场交换机 |
+| 海外是否使用 WireGuard | 禁止 | 海外业务始终使用 VLESS，管理隧道不承载业务 |
+| 管理策略路由表 | 默认不增加 | 先用 endpoint 主机路由和生产入口白名单，实测不足再加 |
 | 一个 LAN 如何扩多组 | 优先多个下游 NAT 路由器；有条件用业务 VLAN | 符合现有硬件现实 |
 | sing-box 数量 | 单实例 | 配置、DNS 映射、规则和回滚只有一份 |
 | sing-box 失败后是否直连 | 否，业务 fail-closed | 防止代理故障变成泄漏 |
-| 客户端 DNS | 专用 TUN DNS + scoped capture + explicit hijack | 避免全局 53 误伤 |
-| 国外 A/AAAA | FakeIP | 先路由后解析，避免国内真实外查 |
+| 客户端 DNS | 分阶段上线专用 TUN DNS + scoped capture + explicit hijack | 避免再次同时修改多个启动依赖 |
+| 国外 A/AAAA | 最终使用 FakeIP，独立金丝雀发布 | 先路由后解析，但兼容性必须实测 |
 | 国内 DNS | `local-dns` direct | 独立、快速，不制造启动循环 |
 | rule-set | 随签名 Release 本地化 | 启动不依赖 CDN |
-| 配置写入 | candidate → check → atomic active → health → rollback | 不让半配置进入生产 |
-| 页面状态 | desired/applied/last-good 分离 | 防止“数据库有、运行时没有”的幽灵数据 |
+| 配置写入 | 非驻留脚本 candidate → check → atomic active → local health → rollback | 不让半配置进入生产，也不新增 daemon |
+| 页面状态 | desired/applied/last-good hash 分离 | 防止幽灵数据，不新增 generation 历史表 |
 
-## 16. 参考依据
+## 16. 实现复杂度预算与前置门禁
+
+### 16.1 允许新增
+
+- 一个国内总部 WireGuard hub；
+- 设备一个内核 `wg-mgmt` 接口和 firewall zone；
+- 一个 `/usr/bin/chb-apply-config` 脚本；
+- 一个设备端应用升级脚本和一个总部批量触发脚本，均执行完即退出；
+- active、last-good、state.json 三份有限运行状态；
+- 本地二进制 rule-set；
+- 最小 shell/JQ 测试和网络 namespace 故障注入脚本。
+
+### 16.2 明确不新增
+
+- 海外 WireGuard peer；
+- 第二个 sing-box；
+- 第二个 dnsmasq 或独立 DNS daemon；
+- 常驻 apply-manager、配置消息队列或配置中心；
+- 为三个 LAN 模式新增通用插件框架；
+- 无限 generation 历史；
+- 在本阶段同时升级 sing-box 大版本；
+- x86 工厂刷机与 OpenWrt 基础固件 OTA 实现。
+
+### 16.3 开始编码前必须补齐
+
+当前控制器引用但仓库中缺少 `chb-init-node.sh`、`speedtest-api.sh`、`vps-init.sh`、`chb-update`，同时缺少 settings、traffic、update 页面。这些运行资产必须在对应迁移阶段补齐、替换或删除引用，不能假装已经可发布。
+
+进入全量部署前，所有参与链路配置、节点初始化、诊断和页面展示的运行文件必须进入 Git 版本追踪；需要建立当前版本和每个迁移阶段的可重复测试。没有运行资产清单、基线数据和自动化测试时，不允许推进到 fail-closed 或 DNS 阶段。
+
+## 17. 参考依据
 
 - 项目事故复盘：`docs/postmortem-2026-07-23-dns-disaster.md`
 - 项目调研：`docs/research-dns-architecture.md`
