@@ -71,6 +71,20 @@ proxies:
     public-key: JVvpvphmGdgOGM8EhmuBrl_1UkukZrpqwdI8apEVNgQ
     short-id: ''
   client-fingerprint: chrome
+- name: vmiss_tokyo_500gb
+  type: vless
+  server: 38.47.105.217
+  port: 13119
+  uuid: 039753c6-46be-4b24-a9db-0f421a793f92
+  network: tcp
+  tls: true
+  udp: true
+  flow: xtls-rprx-vision
+  servername: www.ebay.com
+  reality-opts:
+    public-key: WrMX7mkDC1p4CgAcfiscRY1SPXFwF2AzOaQfzcZkLFw
+    short-id: ''
+  client-fingerprint: chrome
 - name: dog-jp-300gb
   type: vless
   server: 38.47.121.77
@@ -94,6 +108,7 @@ proxy-groups:
   - jtti美国-无限-1
   - jtti美国-无限-2
   - vmiss_jp_500gb
+  - vmiss_tokyo_500gb
   - dog-jp-300gb
 - name: ♻️ 自动选择
   type: url-test
@@ -105,6 +120,7 @@ proxy-groups:
   - jtti美国-无限-1
   - jtti美国-无限-2
   - vmiss_jp_500gb
+  - vmiss_tokyo_500gb
   - dog-jp-300gb
 - name: 🌍 国外媒体
   type: select
