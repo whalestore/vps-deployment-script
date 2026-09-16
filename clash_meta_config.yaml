@@ -74,7 +74,7 @@ proxies:
 - name: dog-jp-300gb
   type: vless
   server: 38.47.121.77
-  port: 443
+  port: 13119
   uuid: 5848edb5-a7d2-435f-b9a9-f42f971bc58f
   network: tcp
   tls: true
